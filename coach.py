@@ -21,12 +21,12 @@ class Coach:
         self.root, self.events = root, queue.Queue()
         self.stop_event = threading.Event(); self.worker = None; self.client = None; self.voice = None
         self.session_id = 0; self.updating = False; self.restart_required = False
-        root.title('Coach Fortnite — IA locale — '+VERSION); root.geometry('800x730')
+        root.title('Coach Fortnite — IA locale — '+VERSION); root.geometry('800x750')
         root.configure(bg='#101827')
         frame = ttk.Frame(root, padding=20); frame.pack(fill='both', expand=True)
         ttk.Label(frame, text='COACH FORTNITE', font=('Segoe UI', 23, 'bold')).pack(anchor='w')
         ttk.Label(frame, text='Ollama + Gemma 3 4B • analyse locale • aucune clé API').pack(anchor='w', pady=(0,14))
-        self.monitor = tk.IntVar(value=1); self.interval = tk.DoubleVar(value=1.0)
+        self.monitor = tk.IntVar(value=1); self.interval = tk.DoubleVar(value=2.5)
         self.expiry = tk.DoubleVar(value=2.0); self.minutes = tk.IntVar(value=5)
         self.onlygame = tk.BooleanVar(value=True); self.speak = tk.BooleanVar(value=True)
         self.preferences={'monitor':self.monitor,'interval':self.interval,'expiry':self.expiry,
@@ -35,6 +35,8 @@ class Coach:
             saved=updater.read_json(APP_DIR/'settings.json',{})
             for name,var in self.preferences.items():
                 if name in saved:var.set(saved[name])
+            # Migration 0.3.4 : l'ancien réglage 1 s maintenait le GPU presque constamment occupé.
+            if self.interval.get() < 2.5:self.interval.set(2.5)
         except (ValueError,TypeError,tk.TclError):pass
         grid = ttk.Frame(frame); grid.pack(fill='x')
         for row,(label,var) in enumerate([('Écran (1, 2…)',self.monitor),('Intervalle minimum (secondes)',self.interval),('Rejeter après (secondes)',self.expiry),('Arrêt automatique (minutes)',self.minutes)]):
@@ -42,7 +44,7 @@ class Coach:
             ttk.Entry(grid,textvariable=var,width=38).grid(row=row,column=1,sticky='ew',padx=10)
         ttk.Checkbutton(frame,text='Analyser uniquement quand Fortnite est au premier plan',variable=self.onlygame).pack(anchor='w',pady=5)
         ttk.Checkbutton(frame,text='Lire les conseils à voix haute',variable=self.speak).pack(anchor='w')
-        ttk.Label(frame,text='La capture concerne tout l’écran choisi. Ferme les fenêtres privées.\nPour tester sur une vidéo, décoche le filtre Fortnite. Aucune API payante.').pack(anchor='w',pady=8)
+        ttk.Label(frame,text='Mode performance : 640×360 et 2,5 s conseillés pour limiter la perte de FPS.\nLa capture concerne tout l’écran choisi. Ferme les fenêtres privées.').pack(anchor='w',pady=8)
         buttons = ttk.Frame(frame);buttons.pack(fill='x')
         self.start_button=ttk.Button(buttons,text='Démarrer',command=self.start);self.start_button.pack(side='left')
         ttk.Button(buttons,text='Arrêter',command=self.stop).pack(side='left',padx=8)
@@ -78,8 +80,10 @@ class Coach:
         if self.updating or self.restart_required or (self.worker and self.worker.is_alive()):return
         try:
             cfg=dict(monitor=self.monitor.get(),interval=self.interval.get(),expiry=self.expiry.get(),minutes=self.minutes.get(),onlygame=self.onlygame.get())
-            if not (0.5<=cfg['interval']<=30 and 0.5<=cfg['expiry']<=10 and 1<=cfg['minutes']<=30 and cfg['monitor']>=1):raise ValueError('Intervalle : 0,5–30 s ; délai : 0,5–10 s ; durée : 1–30 min.')
+            if not (1.0<=cfg['interval']<=30 and 0.5<=cfg['expiry']<=10 and 1<=cfg['minutes']<=30 and cfg['monitor']>=1):raise ValueError('Intervalle : 1–30 s ; délai : 0,5–10 s ; durée : 1–30 min.')
         except Exception as e:messagebox.showerror('Réglages',str(e));return
+        if cfg['interval'] < 2.5:
+            if not messagebox.askyesno('Performance','Sous 2,5 s, Ollama peut faire chuter fortement les FPS de Fortnite. Continuer quand même ?'):return
         self.save_preferences()
         self.session_id+=1;self.stop_event.clear();self.start_button.state(['disabled'])
         self.worker=threading.Thread(target=self.run,args=(cfg,self.session_id),daemon=True);self.worker.start()
@@ -115,7 +119,7 @@ class Coach:
             try:
                 change=updater.plan(APP_DIR,config['repo'],config.get('branch','main'))
                 if change is None:self.emit(self.session_id,'update_current');return
-                backup=updater.apply(APP_DIR,change)
+                updater.apply(APP_DIR,change)
                 self.emit(self.session_id,'update_ok',change['version'])
             except Exception as e:self.emit(self.session_id,'update_error',str(e))
         threading.Thread(target=work,daemon=True).start()
@@ -125,13 +129,13 @@ class Coach:
         try:
             self.emit(sid,'status','Vérification du modèle local…')
             client.verify()
-            self.emit(sid,'status','Chargement et préchauffage de la vision, sans capture écran…')
-            data=io.BytesIO();Image.new('RGB',(960,540),'black').save(data,format='JPEG')
+            self.emit(sid,'status','Chargement et préchauffage de la vision…')
+            data=io.BytesIO();Image.new('RGB',(640,360),'black').save(data,format='JPEG',quality=60)
             client.generate(base64.b64encode(data.getvalue()).decode(),timeout=180,warmup=True)
             if self.stop_event.is_set():return
             self.emit(sid,'status','Modèle prêt. Retourne dans Fortnite.')
             deadline=time.monotonic()+cfg['minutes']*60
-            previous='';count=0;gate=AdviceGate()
+            previous='';count=0;advice_count=0;silent_count=0;gate=AdviceGate()
             with mss.mss() as cap:
                 if cfg['monitor']>=len(cap.monitors):raise ValueError('Numéro d’écran inexistant. Utilise Aperçu local.')
                 while not self.stop_event.is_set() and time.monotonic()<deadline:
@@ -139,16 +143,17 @@ class Coach:
                         self.emit(sid,'status','En pause : Fortnite n’est pas au premier plan.')
                         self.stop_event.wait(.3);continue
                     started=time.monotonic();shot=cap.grab(cap.monitors[cfg['monitor']])
-                    im=Image.frombytes('RGB',shot.size,shot.rgb);im.thumbnail((960,540))
-                    data=io.BytesIO();im.save(data,format='JPEG',quality=75)
+                    im=Image.frombytes('RGB',shot.size,shot.rgb);im.thumbnail((640,360))
+                    data=io.BytesIO();im.save(data,format='JPEG',quality=62,optimize=False)
                     context=previous+'. Catégories en pause : '+', '.join(gate.blocked(time.monotonic()))
                     text=client.generate(base64.b64encode(data.getvalue()).decode(),context,timeout=min(30,max(1,deadline-time.monotonic())))
                     if self.stop_event.is_set() or time.monotonic()>=deadline:break
                     age=time.monotonic()-started;count+=1
                     foreground=not cfg['onlygame'] or active_game()
                     valid=usable(text,age,cfg['expiry'],previous) and foreground and gate.allow(client.last_category,time.monotonic())
-                    self.emit(sid,'result',age,None,count,text,valid,started,cfg['expiry'])
-                    if valid:previous=text
+                    if valid:advice_count+=1;previous=text
+                    else:silent_count+=1
+                    self.emit(sid,'result',age,count,text,valid,started,cfg['expiry'],client.last_category,client.last_evidence,advice_count,silent_count)
                     self.stop_event.wait(max(0,cfg['interval']-(time.monotonic()-started)))
         except Exception as e:
             if not self.stop_event.is_set():self.emit(sid,'status','Arrêt : '+str(e))
@@ -163,8 +168,8 @@ class Coach:
                 if kind.startswith('update_'):
                     self.updating=False
                     if kind=='update_ok':
-                        self.restart_required=True;self.status.set('Version '+data[0]+' installée. Ferme puis relance Lancer.bat.')
-                        messagebox.showinfo('Mise à jour installée','Ferme le coach puis relance Lancer.bat. Tes réglages et le modèle sont conservés.')
+                        self.restart_required=True;self.status.set('Version '+data[0]+' installée. Ferme puis relance Coach Fortnite.')
+                        messagebox.showinfo('Mise à jour installée','Ferme puis relance Coach Fortnite depuis l’icône du bureau.')
                     else:
                         self.update_button.state(['!disabled']);self.start_button.state(['!disabled'])
                         self.status.set('Déjà à jour.' if kind=='update_current' else 'Échec de mise à jour : '+data[0])
@@ -174,14 +179,16 @@ class Coach:
                     self.start_button.state(['!disabled'])
                     if not self.status.get().startswith('Arrêt :'):self.status.set('Session terminée. Le modèle reste chargé 5 minutes dans Ollama.')
                 elif kind=='result' and not self.stop_event.is_set():
-                    age,first,count,text,valid,started,expiry=data
+                    age,count,text,valid,started,expiry,category,evidence,advice_count,silent_count=data
                     valid=valid and time.monotonic()-started<=expiry and (not self.onlygame.get() or active_game())
-                    self.metric.set(f'Capture → réponse complète : {age*1000:.0f} ms | analyses : {count}')
-                    self.status.set('IA trop lente pour le seuil choisi : conseil ignoré.' if age>expiry else 'Analyse locale active')
+                    self.metric.set(f'{age*1000:.0f} ms | analyses : {count} | conseils : {advice_count} | silence : {silent_count}')
+                    if age>expiry:self.status.set('IA trop lente pour le seuil choisi : conseil ignoré.')
+                    elif valid:self.status.set('Conseil détecté : '+category)
+                    else:self.status.set('Analyse active — aucun conseil suffisamment utile sur cette image.')
                     if valid:
                         self.advice.set(text)
-                        self.log.insert('end',f'{time.strftime("%H:%M:%S")} · {age:.2f}s · {text}\n');self.log.see('end')
-                        if self.voice and self.speak.get():self.voice.Speak(text,3) # async + purge previous speech
+                        self.log.insert('end',f'{time.strftime("%H:%M:%S")} · {age:.2f}s · {category} · {text}\n');self.log.see('end')
+                        if self.voice and self.speak.get():self.voice.Speak(text,3)
         except queue.Empty:pass
         self.root.after(50,self.poll)
     def stop(self):
