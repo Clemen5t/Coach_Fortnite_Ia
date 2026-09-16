@@ -23,12 +23,10 @@ if (-not (Test-Path $IconPath)) {
     $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
     $background = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(16,24,39))
-    $accent = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(52,211,153))
     $foreground = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
     $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(52,211,153), 12)
 
     $graphics.FillRectangle($background, 0, 0, 256, 256)
-    $graphics.DrawRoundedRectangle = $null
     $graphics.DrawRectangle($pen, 18, 18, 220, 220)
 
     $font = New-Object System.Drawing.Font('Segoe UI', 86, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
@@ -47,7 +45,6 @@ if (-not (Test-Path $IconPath)) {
     $font.Dispose()
     $pen.Dispose()
     $foreground.Dispose()
-    $accent.Dispose()
     $background.Dispose()
     $graphics.Dispose()
     $bitmap.Dispose()
