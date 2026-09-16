@@ -1,0 +1,80 @@
+COACH FORTNITE — VERSION 0.3.1 LOCALE OLLAMA
+
+MISE A JOUR : voir README.md. Depuis une ancienne version, remplacer les fichiers
+dans le dossier existant, en gardant .venv. Le bouton Mettre a jour utilisera
+ensuite le depot GitHub public Clemen5t/Coach_Fortnite_Ia par defaut. Pas de reinstallation du modele.
+
+ANTI-REPETITION : 30 secondes minimum entre conseils de meme categorie,
+8 secondes entre deux conseils. Le modele doit decrire un indice visible.
+La qualite reste incertaine et le format structure peut augmenter la latence.
+
+Aucune cle API, aucun abonnement API. Le modele analyse les captures sur ton PC.
+Internet sert a installer les logiciels et telecharger le modele au depart.
+
+DEMARRAGE WINDOWS
+1. Installe Ollama : https://ollama.com/download/windows
+2. Ouvre Ollama depuis le menu Demarrer et laisse-le tourner.
+3. Extrais TOUT le ZIP dans un nouveau dossier.
+4. Double-clique Installer-modele.bat. Il telecharge gemma3:4b (plusieurs Go).
+   Pas besoin de compte Ollama pour utiliser ce modele local.
+5. Double-clique Lancer.bat. Python 3.11+ avec tkinter est necessaire.
+   Si tu avais deja lance la version precedente, Python est normalement installe.
+6. Apercu local permet de verifier l'ecran. Ferme ensuite l'apercu.
+7. Premiere session : duree 1 minute, intervalle 1 seconde, rejet apres 2 secondes.
+8. Clique Demarrer. Attends le chargement du modele et le prechauffage de la vision,
+   puis retourne dans Fortnite. Le prechauffage utilise une image noire synthetique.
+
+FONCTIONNEMENT
+Modele fixe : Gemma 3 4B avec vision. Adresse fixe : 127.0.0.1:11434.
+Aucun repli cloud. Les metadonnees signalant un modele distant sont refusees.
+Aucune capture enregistree sur disque par ce logiciel. Voix Windows locale.
+Une image recente par analyse, aucune file d'images ni historique qui grossit.
+La vue ponctuelle ne permet pas de juger chaque edit ou mouvement rapide.
+La capture couvre TOUT l'ecran choisi, y compris d'autres fenetres visibles.
+Le filtre Fortnite suspend les nouvelles captures quand le jeu n'est pas au premier plan.
+Une analyse deja en cours peut encore se terminer ; aucun conseil ne sera lu si tu
+as quitte le jeu. Arreter interrompt la requete et coupe la voix.
+Le modele reste en memoire jusqu'a 5 minutes apres la derniere requete.
+Pour le liberer tout de suite, saisis dans un terminal : ollama stop gemma3:4b
+
+VITESSE
+Le delai affiche va du debut de capture a la reponse texte complete.
+Il n'inclut pas l'attente avant capture ni le demarrage de la voix Windows.
+Aucune garantie de moins d'une seconde. Les conseils de plus de 2 s sont ignores
+par defaut : cela ne rend pas le modele plus rapide.
+Le logiciel attend la fin de chaque analyse avant de capturer la suivante.
+Le premier chargement peut prendre longtemps et n'est pas inclus dans la duree
+choisie pour jouer. Une analyse peut continuer au plus 30 secondes avant erreur.
+Des conseils tardifs sont ignores, y compris en fin de session.
+Un intervalle de 1 s ne veut pas dire une analyse par seconde si l'IA prend 5 s.
+Ne monte pas simplement le seuil pour du combat : un vieux conseil peut etre faux.
+
+SI C'EST TROP LENT
+- Dans un terminal pendant la session, lance : ollama ps
+  Verifie la colonne PROCESSOR. Une execution CPU risque d'etre lente.
+- Les pilotes et la version Ollama determinent l'acceleration GPU disponible.
+  Documentation : https://docs.ollama.com/windows et https://docs.ollama.com/gpu
+- Fortnite et Ollama se partagent les ressources. Compare les FPS avec et sans coach.
+- Pour diagnostiquer, utilise une video de partie en decochant le filtre Fortnite.
+  Attention, tout l'ecran choisi est alors analysable tant que la session tourne.
+- Si tous les conseils sont rejetes, envoie la latence mesuree et la sortie ollama ps.
+
+ERREURS
+Ollama non demarre : ouvre l'application Ollama.
+Modele absent : relance Installer-modele.bat et attends la fin du telechargement.
+Vision indisponible : mets Ollama a jour et relance le telechargement.
+Image noire : essaie Fortnite en fenetre sans bordure et reverifie Apercu local.
+Lancer.bat non fonctionnel : installe Python 3.11+ avec tkinter depuis python.org.
+
+VALIDATION
+18 tests automatises reussis contre un serveur local simule : format de requete,
+annulation avant et pendant requete, refus distant, modele absent, absence de vision,
+reponse tronquee, rejet des conseils perimes, anti-repetition et mise a jour
+avec preservation des reglages et restauration sur erreur. Syntaxe Python verifiee.
+Pas de test reel de Gemma, de la capture Windows, de la voix ou des FPS ici.
+Ce prototype n'est pas un coach Fortnite specialement entraine et peut se tromper.
+
+SOURCES
+https://ollama.com/library/gemma3:4b
+https://docs.ollama.com/api/generate
+https://docs.ollama.com/windows
