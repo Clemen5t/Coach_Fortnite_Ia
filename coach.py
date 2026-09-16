@@ -49,18 +49,34 @@ class VoiceEngine:
     def prepare(self,status=lambda x:None):
         with self.lock:
             self.ensure_tts(status);self.ensure_whisper(status)
-    def record_question(self,status=lambda x:None,seconds=4.5):
+    def record_question(self,status=lambda x:None,level=lambda rms,peak,bands:None,seconds=4.5):
         with self.lock:
             self.ensure_whisper(status)
             status('🎙️ Parle maintenant…')
-            rate=16000
-            audio=sd.rec(int(seconds*rate),samplerate=rate,channels=1,dtype='float32')
-            sd.wait();samples=np.asarray(audio[:,0],dtype=np.float32)
+            rate=16000;block=512;chunks=[]
+            def callback(indata,frames,timing,flags):
+                samples=np.asarray(indata[:,0],dtype=np.float32).copy();chunks.append(samples)
+                rms=float(np.sqrt(np.mean(samples*samples))) if len(samples) else 0.0
+                peak=float(np.max(np.abs(samples))) if len(samples) else 0.0
+                if len(samples):
+                    window=np.hanning(len(samples));spec=np.abs(np.fft.rfft(samples*window));freq=np.fft.rfftfreq(len(samples),1/rate)
+                    bands=[]
+                    for lo,hi in ((80,180),(180,350),(350,700),(700,1400),(1400,2800),(2800,5000),(5000,7500)):
+                        mask=(freq>=lo)&(freq<hi);value=float(np.mean(spec[mask])) if np.any(mask) else 0.0;bands.append(value)
+                    m=max(bands) if bands else 0.0
+                    if m>0:bands=[min(1.0,v/m) for v in bands]
+                else:bands=[0.0]*7
+                level(rms,peak,bands)
+            with sd.InputStream(samplerate=rate,channels=1,dtype='float32',blocksize=block,callback=callback):
+                end=time.monotonic()+seconds
+                while time.monotonic()<end:time.sleep(.03)
+            level(0.0,0.0,[0.0]*7)
+            samples=np.concatenate(chunks) if chunks else np.zeros(0,dtype=np.float32)
+            if samples.size==0:raise RuntimeError('Aucun échantillon reçu du microphone.')
             status('Transcription locale…')
             segments,_=self.whisper.transcribe(samples,language='fr',beam_size=1,best_of=1,
                 vad_filter=True,condition_on_previous_text=False,temperature=0)
-            text=' '.join(s.text.strip() for s in segments if s.text.strip()).strip()
-            return text
+            return ' '.join(s.text.strip() for s in segments if s.text.strip()).strip()
     def speak(self,text,status=lambda x:None):
         if not text:return
         with self.lock:
@@ -69,8 +85,7 @@ class VoiceEngine:
             try:
                 with wave.open(path,'wb') as wav_file:self.piper.synthesize_wav(text,wav_file)
                 with wave.open(path,'rb') as wav_file:
-                    rate=wav_file.getframerate();channels=wav_file.getnchannels();width=wav_file.getsampwidth()
-                    raw=wav_file.readframes(wav_file.getnframes())
+                    rate=wav_file.getframerate();channels=wav_file.getnchannels();width=wav_file.getsampwidth();raw=wav_file.readframes(wav_file.getnframes())
                 if width==2:data=np.frombuffer(raw,dtype=np.int16).astype(np.float32)/32768.0
                 elif width==4:data=np.frombuffer(raw,dtype=np.int32).astype(np.float32)/2147483648.0
                 else:raise RuntimeError('Format audio Piper non pris en charge.')
@@ -85,7 +100,7 @@ class Coach:
         self.root,self.events=root,queue.Queue();self.stop_event=threading.Event();self.voice_stop=threading.Event()
         self.worker=None;self.client=None;self.session_id=0;self.updating=False;self.restart_required=False
         self.voice_busy=False;self.voice=VoiceEngine(APP_DIR);self.history=[];self.hotkey_listener=None
-        root.title('Coach Fortnite — Acolyte local — '+VERSION);root.geometry('860x790');root.configure(bg='#101827')
+        root.title('Coach Fortnite — Acolyte local — '+VERSION);root.geometry('860x850');root.configure(bg='#101827')
         frame=ttk.Frame(root,padding=20);frame.pack(fill='both',expand=True)
         ttk.Label(frame,text='ACOLYTE FORTNITE',font=('Segoe UI',23,'bold')).pack(anchor='w')
         ttk.Label(frame,text='Whisper + Gemma 3 Vision + Piper • 100 % local après installation • aucune clé API').pack(anchor='w',pady=(0,12))
@@ -96,7 +111,16 @@ class Coach:
         self.talk_button=ttk.Button(row,text='🎙 Parler au coach (F8)',command=self.ask_voice);self.talk_button.pack(side='left')
         ttk.Button(row,text='Préparer la voix IA',command=self.prepare_voice).pack(side='left',padx=8)
         self.voice_state=tk.StringVar(value='Prêt. F8 = parler au coach.')
-        ttk.Label(voicebox,textvariable=self.voice_state,wraplength=760).pack(anchor='w',pady=(8,0))
+        ttk.Label(voicebox,textvariable=self.voice_state,wraplength=760).pack(anchor='w',pady=(8,3))
+        meterrow=ttk.Frame(voicebox);meterrow.pack(fill='x',pady=(3,0))
+        self.mic_label=tk.StringVar(value='Micro : en attente')
+        ttk.Label(meterrow,textvariable=self.mic_label,width=28).pack(side='left')
+        self.meter=tk.Canvas(meterrow,height=34,width=450,highlightthickness=1,highlightbackground='#777777',bg='#151515')
+        self.meter.pack(side='left',fill='x',expand=True,padx=(6,0))
+        self.audio_bars=[]
+        for i in range(20):
+            x1=5+i*21;x2=x1+14
+            self.audio_bars.append(self.meter.create_rectangle(x1,27,x2,29,fill='#454545',outline=''))
 
         autobox=ttk.LabelFrame(frame,text='Analyse automatique — optionnelle',padding=10);autobox.pack(fill='x')
         self.monitor=tk.IntVar(value=1);self.interval=tk.DoubleVar(value=4.0);self.expiry=tk.DoubleVar(value=2.5);self.minutes=tk.IntVar(value=5)
@@ -138,7 +162,6 @@ class Coach:
             self.hotkey_listener=keyboard.Listener(on_press=on_press);self.hotkey_listener.daemon=True;self.hotkey_listener.start()
         except Exception as e:self.voice_state.set('F8 indisponible : utilise le bouton Parler au coach. '+str(e))
     def emit(self,sid,kind,*data):self.events.put((sid,kind,data))
-    def set_voice_status(self,text):self.emit(self.session_id,'voice_status',text)
     def capture_for_ai(self):
         with mss.mss() as cap:
             monitor=self.monitor.get()
@@ -157,11 +180,10 @@ class Coach:
         if self.voice_busy or self.updating:return
         self.voice_busy=True;self.talk_button.state(['disabled']);sid=self.session_id
         def work():
-            ai=None
             try:
-                question=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s))
+                question=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s),lambda rms,peak,bands:self.emit(sid,'audio_level',rms,peak,bands))
                 if not question:
-                    self.emit(sid,'voice_error','Je n’ai pas détecté de phrase. Réessaie en parlant plus près du micro.');return
+                    self.emit(sid,'voice_error','Je n’ai pas détecté de phrase. Regarde le spectre micro : s’il ne bouge pas, vérifie le micro sélectionné dans Windows.');return
                 self.emit(sid,'question',question);self.emit(sid,'voice_status','📸 Capture de Fortnite et analyse…')
                 image=self.capture_for_ai();ai=LocalAI(self.voice_stop);ai.verify()
                 hist='\n'.join(f'Joueur: {q}\nAcolyte: {a}' for q,a in self.history[-4:])
@@ -213,8 +235,7 @@ class Coach:
         except (ValueError,OSError):config={}
         repo=simpledialog.askstring('Dépôt GitHub','Lien du dépôt PUBLIC :',initialvalue=config.get('repo',DEFAULT_REPO),parent=self.root)
         if not repo:return
-        try:
-            config={'repo':updater.normalize_repo(repo),'branch':'main'};updater.write_json(APP_DIR/'update-config.json',config);self.status.set('Dépôt configuré : '+config['repo'])
+        try:config={'repo':updater.normalize_repo(repo),'branch':'main'};updater.write_json(APP_DIR/'update-config.json',config);self.status.set('Dépôt configuré : '+config['repo'])
         except (ValueError,OSError) as e:messagebox.showerror('GitHub',str(e))
     def update_app(self):
         if self.updating or self.voice_busy:return
@@ -232,15 +253,31 @@ class Coach:
                 updater.apply(APP_DIR,change);self.emit(sid,'update_ok',change['version'])
             except Exception as e:self.emit(sid,'update_error',str(e))
         threading.Thread(target=work,daemon=True).start()
+    def draw_audio(self,rms,peak,bands):
+        level=min(1.0,max(0.0,rms*12.0));active=int(round(level*20))
+        for i,item in enumerate(self.audio_bars):
+            height=3
+            if i<active:
+                band=bands[min(len(bands)-1,int(i*len(bands)/20))] if bands else 0.0
+                height=5+int(22*max(level,band*.75))
+                fill='#45d483' if peak<.85 else '#ff9f43'
+            else:fill='#454545'
+            x1=5+i*21;x2=x1+14;self.meter.coords(item,x1,30-height,x2,29);self.meter.itemconfigure(item,fill=fill)
+        if peak>=.98:self.mic_label.set('Micro : saturation')
+        elif rms>.025:self.mic_label.set('Micro : voix détectée')
+        elif rms>.004:self.mic_label.set('Micro : signal faible')
+        else:self.mic_label.set('Micro : silence')
     def poll(self):
         try:
             while True:
                 sid,kind,data=self.events.get_nowait()
                 if sid!=self.session_id and not kind.startswith('update_'):continue
-                if kind=='voice_status':self.voice_state.set(data[0])
-                elif kind=='voice_ready':self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Prêt. F8 = parler au coach.')
+                if kind=='audio_level':self.draw_audio(*data)
+                elif kind=='voice_status':self.voice_state.set(data[0])
+                elif kind=='voice_ready':
+                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Prêt. F8 = parler au coach.');self.draw_audio(0,0,[0]*7);self.mic_label.set('Micro : en attente')
                 elif kind=='voice_error':
-                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Erreur : '+data[0]);self.status.set('Acolyte vocal indisponible.')
+                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Erreur : '+data[0]);self.status.set('Acolyte vocal indisponible.');self.draw_audio(0,0,[0]*7)
                 elif kind=='question':self.log.insert('end','\n🎙️ Toi : '+data[0]+'\n');self.log.see('end')
                 elif kind=='answer':
                     q,a,elapsed=data;self.advice.set(a);self.metric.set(f'Question → réponse vision : {elapsed*1000:.0f} ms');self.status.set('Acolyte a répondu à ta question.')
