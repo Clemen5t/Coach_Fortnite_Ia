@@ -3,6 +3,9 @@
   "schema": 1,
   "files": [
     ".gitignore",
+    "CoachFortnite.vbs",
+    "Creer-raccourci-bureau.bat",
+    "Creer-raccourci-bureau.ps1",
     "Installer-modele.bat",
     "LIRE-MOI.txt",
     "Lancer.bat",
