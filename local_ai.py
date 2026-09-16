@@ -27,6 +27,22 @@ N'invente jamais un ennemi, un objet, une ressource ou une information hors écr
 Évite les conseils vagues. Dans evidence, décris brièvement ce que tu vois. Dans
 advice, une seule consigne en français, 12 mots maximum. Retourne seulement le JSON."""
 
+CONVERSATION_PROMPT = """Tu es Acolyte, le coéquipier IA vocal personnel du joueur.
+Tu discutes naturellement avec lui, comme dans une conversation vocale normale.
+
+IMPORTANT : aucune image n'est fournie dans ce mode. Ne prétends donc jamais voir
+l'écran, Fortnite, le joueur ou son environnement. Si la question nécessite de voir
+quelque chose, dis brièvement que tu peux regarder l'écran si le joueur te le demande.
+
+Tu peux discuter librement de Fortnite, entraînement, stratégie, réglages, matériel,
+questions générales ou simplement converser. Utilise le contexte récent pour comprendre
+les pronoms et les suites de conversation. Réponds directement à ce que le joueur veut,
+sans transformer chaque phrase en coaching Fortnite.
+
+Style : français naturel, oral, direct et chaleureux. En général 1 à 4 phrases courtes.
+Pas de JSON, pas de préambule, pas de formule robotique. Ne dis pas systématiquement
+« en tant qu'IA »."""
+
 SCENE_PROMPT = """Tu es un CLASSIFICATEUR VISUEL d'écran Fortnite, pas un coach.
 Ta seule tâche est d'identifier l'état ACTUEL visible sur UNE capture d'écran.
 N'invente rien et ne donne aucun conseil de jeu.
@@ -47,8 +63,7 @@ Choisis exactement une scène :
 - unknown : les indices visibles ne permettent pas de choisir honnêtement.
 
 RÈGLES CRITIQUES :
-1. La présence d'une mini-carte ou d'un HUD ne suffit PAS à conclure match : le créatif peut
-   aussi en avoir.
+1. La présence d'une mini-carte ou d'un HUD ne suffit PAS à conclure match : le créatif peut aussi en avoir.
 2. Un personnage immobile au centre d'une interface avec bouton Jouer/Prêt = lobby, pas match.
 3. Ne déduis jamais la scène depuis une question du joueur : regarde uniquement l'image.
 4. Si lobby et creative sont tous les deux plausibles sans indice fort, choisis unknown.
@@ -65,8 +80,7 @@ Adapte ta réponse :
 - creative : raisonne entraînement/mécaniques selon ce qui est vraiment visible : build, edit,
   aim, déplacement, position, exercice ou map. Ne prétends pas que c'est une Battle Royale.
 - match : conseille la situation de partie visible, sans inventer ce qui est hors écran.
-- spectator : décris/analyse ce qui est observé, sans parler comme si le joueur contrôlait
-  forcément le personnage affiché.
+- spectator : décris/analyse ce qui est observé, sans parler comme si le joueur contrôlait forcément le personnage affiché.
 - menu : réponds sur l'interface/menu visible, pas sur un combat.
 - loading : dis que l'écran est en transition et qu'il faut attendre pour analyser le jeu.
 - unknown : dis clairement que tu ne peux pas déterminer le contexte avec certitude.
@@ -94,19 +108,8 @@ SCENE_SCHEMA = {'type':'object','properties':{
     'evidence':{'type':'string'}},
     'required':['scene','confidence','evidence'],'additionalProperties':False}
 
-ANSWER_SCHEMA = {'type':'object','properties':{
-    'answer':{'type':'string'}},
-    'required':['answer'],'additionalProperties':False}
-
-SCENE_NAMES = {
-    'lobby':'le salon Fortnite',
-    'creative':'une session créative',
-    'match':'une partie',
-    'spectator':'le mode spectateur ou replay',
-    'menu':'un menu Fortnite',
-    'loading':'un écran de chargement',
-    'unknown':'un contexte que je ne peux pas identifier avec certitude',
-}
+ANSWER_SCHEMA = {'type':'object','properties':{'answer':{'type':'string'}},
+                 'required':['answer'],'additionalProperties':False}
 
 
 def _normalize(text):
@@ -150,6 +153,26 @@ def _mode_question(question):
     return any(p in q for p in phrases)
 
 
+def _needs_vision(question):
+    """Vision uniquement lorsqu'elle est réellement demandée ou indispensable."""
+    q=_normalize(question).replace("'",' ')
+    explicit=(
+        'regarde mon ecran','regarde l ecran','regarde ce que','regarde ma partie',
+        'analyse mon jeu','analyse ma partie','analyse ce que je fais','analyse mon ecran',
+        'analyse la partie','analyse l ecran','fais une analyse','tu vois quoi',
+        'qu est ce que tu vois','que vois tu','je suis ou','dans quel mode','quel mode',
+        'creatif ou','salon ou','je suis en creatif','je suis dans le salon',
+        'qu est ce que j ai a l ecran','mon inventaire','mes armes','ma vie','mon bouclier',
+        'ma mini carte','mon skin','ce skin','cette arme','cet objet','cette position',
+        'ce que je fais','sur mon ecran','a l ecran','et la tu vois','et maintenant tu vois'
+    )
+    if any(p in q for p in explicit): return True
+    # Les demandes de décision de combat nécessitent l'image si elles parlent de la situation actuelle.
+    situational=('je prends le fight','je dois push','je dois fuir','je dois rotate',
+                 'je dois me soigner','je dois reload','ou je vais','je fais quoi ici')
+    return any(p in q for p in situational)
+
+
 class AdviceGate:
     def __init__(self): self.last_any=-1e9; self.last_category={}
     def blocked(self,now): return [cat for cat,t in self.last_category.items() if now-t<20]
@@ -163,6 +186,7 @@ class LocalAI:
         self.stop_event=stop_event; self.port=port; self.conn=None
         self.last_category='none'; self.last_evidence=''
         self.last_scene='unknown'; self.last_observation=''; self.last_scene_confidence='low'
+        self.used_vision=False
         self.lock=threading.Lock()
 
     def cancel(self):
@@ -216,7 +240,22 @@ class LocalAI:
         text,self.last_category,self.last_evidence=parse_advice(result.get('response',''))
         return text
 
+    def chat(self,question,history='',timeout=30):
+        """Conversation naturelle, sans capture ni analyse visuelle."""
+        self.used_vision=False
+        self.last_scene='unknown'; self.last_scene_confidence='low'; self.last_observation='Conversation sans vision.'
+        prompt='MESSAGE DU JOUEUR : '+question.strip()
+        if history.strip(): prompt+='\nCONVERSATION RÉCENTE :\n'+history[-2200:]
+        result=self.request('/api/generate',{
+            'model':MODEL,'stream':False,'keep_alive':'5m','system':CONVERSATION_PROMPT,
+            'prompt':prompt,
+            'options':{'num_ctx':3072,'num_predict':220,'temperature':0.35}},timeout=timeout)
+        if not result.get('done'): raise RuntimeError('Réponse Ollama incomplète.')
+        text=' '.join(str(result.get('response','')).strip().split())
+        return text[:700] if text else "Je n'ai pas réussi à répondre."
+
     def classify_scene(self,image,timeout=20):
+        self.used_vision=True
         result=self.request('/api/generate',{
             'model':MODEL,'stream':False,'keep_alive':'5m','system':SCENE_PROMPT,
             'format':SCENE_SCHEMA,
@@ -226,17 +265,13 @@ class LocalAI:
         if not result.get('done'): raise RuntimeError('Classification visuelle incomplète.')
         try: parsed=json.loads(str(result.get('response','')).strip())
         except (ValueError,TypeError): parsed={}
-        scene=parsed.get('scene','unknown')
-        confidence=parsed.get('confidence','low')
+        scene=parsed.get('scene','unknown'); confidence=parsed.get('confidence','low')
         evidence=' '.join(str(parsed.get('evidence','')).strip().split())
         if scene not in SCENES: scene='unknown'
         if confidence not in CONFIDENCE: confidence='low'
         if not evidence: confidence='low'
-        # Une faible confiance ne doit jamais devenir une affirmation de contexte.
         if confidence=='low': scene='unknown'
-        self.last_scene=scene
-        self.last_scene_confidence=confidence
-        self.last_observation=evidence[:280]
+        self.last_scene=scene; self.last_scene_confidence=confidence; self.last_observation=evidence[:280]
         return scene,confidence,evidence
 
     def _direct_scene_answer(self,scene,confidence,evidence):
@@ -251,17 +286,18 @@ class LocalAI:
         return "Je ne peux pas déterminer le contexte avec certitude."
 
     def ask(self,image,question,history='',timeout=30):
+        """Route automatiquement vers conversation seule ou vision selon la demande."""
         question=question.strip()
+        if not _needs_vision(question):
+            return self.chat(question,history,timeout=timeout)
+
+        self.used_vision=True
         scene_timeout=max(6,min(20,int(timeout*0.45)))
         scene,confidence,evidence=self.classify_scene(image,timeout=scene_timeout)
 
-        # Les questions de contexte sont répondues de façon déterministe depuis le
-        # classificateur pour empêcher une seconde génération d'inventer une mini-carte.
         if _mode_question(question):
             return self._direct_scene_answer(scene,confidence,evidence)
 
-        # Dans les écrans non jouables, une demande d'analyse générale n'a pas besoin
-        # d'un second passage coûteux ni d'un faux conseil de gameplay.
         if _general_analysis_request(question):
             if scene=='lobby':
                 return ("Tu es dans le salon Fortnite. Je peux analyser le mode, le groupe et "
@@ -280,7 +316,7 @@ class LocalAI:
             'QUESTION DU JOUEUR : '+question+'\n'
             'Réponds sans contredire la scène imposée et sans ajouter d’élément non visible.'
         )
-        if history.strip(): prompt+='\nCONTEXTE RÉCENT : '+history[-1200:]
+        if history.strip(): prompt+='\nCONTEXTE RÉCENT : '+history[-1400:]
         answer_timeout=max(6,timeout-scene_timeout)
         result=self.request('/api/generate',{
             'model':MODEL,'stream':False,'keep_alive':'5m','system':ANSWER_PROMPT,
@@ -294,7 +330,7 @@ class LocalAI:
             answer=' '.join(raw.split())
         if not answer:
             return "Je vois la capture, mais je n'ai pas assez d'éléments pour te conseiller précisément."
-        return answer[:520]
+        return answer[:700]
 
 
 def usable(text,age,limit,previous):
