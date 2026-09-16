@@ -34,10 +34,20 @@ IMPORTANT : aucune image n'est fournie dans ce mode. Ne prétends donc jamais vo
 l'écran, Fortnite, le joueur ou son environnement. Si la question nécessite de voir
 quelque chose, dis brièvement que tu peux regarder l'écran si le joueur te le demande.
 
+MÉMOIRE : le bloc HISTORIQUE RÉEL fourni dans le prompt est ta SEULE source sur ce qui
+a été dit avant. Ne prétends jamais te souvenir d'un sujet, réglage, question ou détail
+qui n'apparaît pas dans cet historique. Ne complète pas les trous et n'invente jamais
+une ancienne conversation. Si l'historique ne contient pas l'information demandée,
+dis simplement que tu ne l'as pas dans la conversation actuelle.
+
 Tu peux discuter librement de Fortnite, entraînement, stratégie, réglages, matériel,
 questions générales ou simplement converser. Utilise le contexte récent pour comprendre
 les pronoms et les suites de conversation. Réponds directement à ce que le joueur veut,
 sans transformer chaque phrase en coaching Fortnite.
+
+Ne prétends pas avoir une activité, une pensée ou une occupation en arrière-plan en dehors
+de cette conversation. Par exemple, si on te demande « ça va ? », réponds simplement et
+naturellement au lieu d'inventer que tu étais en train de préparer une stratégie.
 
 Style : français naturel, oral, direct et chaleureux. En général 1 à 4 phrases courtes.
 Pas de JSON, pas de préambule, pas de formule robotique. Ne dis pas systématiquement
@@ -167,10 +177,62 @@ def _needs_vision(question):
         'ce que je fais','sur mon ecran','a l ecran','et la tu vois','et maintenant tu vois'
     )
     if any(p in q for p in explicit): return True
-    # Les demandes de décision de combat nécessitent l'image si elles parlent de la situation actuelle.
     situational=('je prends le fight','je dois push','je dois fuir','je dois rotate',
                  'je dois me soigner','je dois reload','ou je vais','je fais quoi ici')
     return any(p in q for p in situational)
+
+
+def needs_vision(question):
+    """API publique utilisée par l'interface pour éviter toute capture inutile."""
+    return _needs_vision(question)
+
+
+def _history_messages(history):
+    """Extrait uniquement les tours réellement stockés par l'application."""
+    users=[]; assistants=[]
+    for raw in str(history or '').splitlines():
+        line=raw.strip()
+        if line.startswith('Joueur:'):
+            text=line[len('Joueur:'):].strip()
+            if text: users.append(text)
+        elif line.startswith('Acolyte:'):
+            text=line[len('Acolyte:'):].strip()
+            if text: assistants.append(text)
+    return users,assistants
+
+
+def _memory_request_kind(question):
+    q=_normalize(question).replace("'",' ')
+    assistant_phrases=(
+        'qu est ce que tu m as repondu','que m as tu repondu','ta derniere reponse',
+        'tu m as repondu quoi','c etait quoi ta reponse'
+    )
+    if any(p in q for p in assistant_phrases): return 'assistant'
+    user_phrases=(
+        'tu te rappelle','tu te souviens','ce que je viens de te demander',
+        'ce que je t ai demande','ce que j ai eu a te demander','ma derniere question',
+        'qu est ce que je viens de te demander','que viens je de te demander',
+        'c etait quoi ma question','quelle etait ma question'
+    )
+    if any(p in q for p in user_phrases): return 'user'
+    topic_phrases=('on parlait de quoi','de quoi on parlait','quel etait notre sujet','c etait quoi le sujet')
+    if any(p in q for p in topic_phrases): return 'topic'
+    return None
+
+
+def _direct_memory_answer(question,history):
+    kind=_memory_request_kind(question)
+    if not kind: return None
+    users,assistants=_history_messages(history)
+    if not users:
+        return "Je n’ai pas de message précédent dans cette session dont je puisse me souvenir."
+    if kind=='assistant':
+        if assistants:
+            return 'Ma dernière réponse était : « '+assistants[-1]+' »'
+        return "Je n’ai pas encore de réponse précédente enregistrée dans cette session."
+    if kind=='topic':
+        return 'Juste avant, on parlait de ta question : « '+users[-1]+' »'
+    return 'Oui. Juste avant, tu m’as demandé : « '+users[-1]+' »'
 
 
 class AdviceGate:
@@ -244,12 +306,20 @@ class LocalAI:
         """Conversation naturelle, sans capture ni analyse visuelle."""
         self.used_vision=False
         self.last_scene='unknown'; self.last_scene_confidence='low'; self.last_observation='Conversation sans vision.'
-        prompt='MESSAGE DU JOUEUR : '+question.strip()
-        if history.strip(): prompt+='\nCONVERSATION RÉCENTE :\n'+history[-2200:]
+
+        memory_answer=_direct_memory_answer(question,history)
+        if memory_answer is not None:
+            return memory_answer
+
+        prompt='MESSAGE ACTUEL DU JOUEUR : '+question.strip()
+        if history.strip():
+            prompt+='\nHISTORIQUE RÉEL DE CETTE SESSION (source unique de mémoire) :\n'+history[-2400:]
+        else:
+            prompt+='\nHISTORIQUE RÉEL DE CETTE SESSION : aucun message précédent.'
         result=self.request('/api/generate',{
             'model':MODEL,'stream':False,'keep_alive':'5m','system':CONVERSATION_PROMPT,
             'prompt':prompt,
-            'options':{'num_ctx':3072,'num_predict':220,'temperature':0.35}},timeout=timeout)
+            'options':{'num_ctx':3072,'num_predict':220,'temperature':0.18}},timeout=timeout)
         if not result.get('done'): raise RuntimeError('Réponse Ollama incomplète.')
         text=' '.join(str(result.get('response','')).strip().split())
         return text[:700] if text else "Je n'ai pas réussi à répondre."
@@ -292,6 +362,8 @@ class LocalAI:
             return self.chat(question,history,timeout=timeout)
 
         self.used_vision=True
+        if not image:
+            return "J’ai besoin d’une capture d’écran pour répondre à cette question visuelle."
         scene_timeout=max(6,min(20,int(timeout*0.45)))
         scene,confidence,evidence=self.classify_scene(image,timeout=scene_timeout)
 
