@@ -1,0 +1,19 @@
+{
+  "app_id": "coach-fortnite-local",
+  "schema": 1,
+  "files": [
+    ".gitignore",
+    "Installer-modele.bat",
+    "LIRE-MOI.txt",
+    "Lancer.bat",
+    "README.md",
+    "VERSION",
+    "coach.py",
+    "local_ai.py",
+    "requirements.txt",
+    "test_local_ai.py",
+    "test_updater.py",
+    "update-manifest.json",
+    "updater.py"
+  ]
+}
