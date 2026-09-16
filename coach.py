@@ -49,7 +49,7 @@ class VoiceEngine:
     def prepare(self,status=lambda x:None):
         with self.lock:
             self.ensure_tts(status);self.ensure_whisper(status)
-    def record_question(self,status=lambda x:None,level=lambda rms,peak,bands:None,seconds=4.5):
+    def record_question(self,status=lambda x:None,level=lambda rms,peak,bands:None,seconds=4.5,device=None):
         with self.lock:
             self.ensure_whisper(status)
             status('🎙️ Parle maintenant…')
@@ -67,12 +67,15 @@ class VoiceEngine:
                     if m>0:bands=[min(1.0,v/m) for v in bands]
                 else:bands=[0.0]*7
                 level(rms,peak,bands)
-            with sd.InputStream(samplerate=rate,channels=1,dtype='float32',blocksize=block,callback=callback):
-                end=time.monotonic()+seconds
-                while time.monotonic()<end:time.sleep(.03)
+            try:
+                with sd.InputStream(device=device,samplerate=rate,channels=1,dtype='float32',blocksize=block,callback=callback):
+                    end=time.monotonic()+seconds
+                    while time.monotonic()<end:time.sleep(.03)
+            except Exception as e:
+                raise RuntimeError('Impossible d’ouvrir le microphone sélectionné : '+str(e)) from e
             level(0.0,0.0,[0.0]*7)
             samples=np.concatenate(chunks) if chunks else np.zeros(0,dtype=np.float32)
-            if samples.size==0:raise RuntimeError('Aucun échantillon reçu du microphone.')
+            if samples.size==0:raise RuntimeError('Aucun échantillon reçu du microphone sélectionné.')
             status('Transcription locale…')
             segments,_=self.whisper.transcribe(samples,language='fr',beam_size=1,best_of=1,
                 vad_filter=True,condition_on_previous_text=False,temperature=0)
@@ -100,18 +103,31 @@ class Coach:
         self.root,self.events=root,queue.Queue();self.stop_event=threading.Event();self.voice_stop=threading.Event()
         self.worker=None;self.client=None;self.session_id=0;self.updating=False;self.restart_required=False
         self.voice_busy=False;self.voice=VoiceEngine(APP_DIR);self.history=[];self.hotkey_listener=None
-        root.title('Coach Fortnite — Acolyte local — '+VERSION);root.geometry('860x850');root.configure(bg='#101827')
+        try:self.saved_settings=updater.read_json(APP_DIR/'settings.json',{}) or {}
+        except Exception:self.saved_settings={}
+        root.title('Coach Fortnite — Acolyte local — '+VERSION);root.geometry('900x900');root.configure(bg='#101827')
         frame=ttk.Frame(root,padding=20);frame.pack(fill='both',expand=True)
         ttk.Label(frame,text='ACOLYTE FORTNITE',font=('Segoe UI',23,'bold')).pack(anchor='w')
         ttk.Label(frame,text='Whisper + Gemma 3 Vision + Piper • 100 % local après installation • aucune clé API').pack(anchor='w',pady=(0,12))
 
         voicebox=ttk.LabelFrame(frame,text='Acolyte vocal — mode conseillé',padding=12);voicebox.pack(fill='x',pady=(0,12))
         ttk.Label(voicebox,text='Appuie sur F8 en jeu ou clique sur le bouton, pose ta question, puis Acolyte regarde l’écran et te répond.').pack(anchor='w')
-        row=ttk.Frame(voicebox);row.pack(fill='x',pady=(8,0))
+
+        microw=ttk.Frame(voicebox);microw.pack(fill='x',pady=(8,2))
+        ttk.Label(microw,text='Microphone :').pack(side='left')
+        self.mic_choice=tk.StringVar(value=str(self.saved_settings.get('microphone','')))
+        self.mic_combo=ttk.Combobox(microw,textvariable=self.mic_choice,state='readonly',width=62)
+        self.mic_combo.pack(side='left',fill='x',expand=True,padx=(8,6))
+        ttk.Button(microw,text='Actualiser',command=self.refresh_microphones).pack(side='left')
+        self.mic_devices={}
+        self.mic_combo.bind('<<ComboboxSelected>>',lambda e:self.on_microphone_changed())
+        self.refresh_microphones(initial=True)
+
+        row=ttk.Frame(voicebox);row.pack(fill='x',pady=(6,0))
         self.talk_button=ttk.Button(row,text='🎙 Parler au coach (F8)',command=self.ask_voice);self.talk_button.pack(side='left')
         ttk.Button(row,text='Préparer la voix IA',command=self.prepare_voice).pack(side='left',padx=8)
         self.voice_state=tk.StringVar(value='Prêt. F8 = parler au coach.')
-        ttk.Label(voicebox,textvariable=self.voice_state,wraplength=760).pack(anchor='w',pady=(8,3))
+        ttk.Label(voicebox,textvariable=self.voice_state,wraplength=800).pack(anchor='w',pady=(8,3))
         meterrow=ttk.Frame(voicebox);meterrow.pack(fill='x',pady=(3,0))
         self.mic_label=tk.StringVar(value='Micro : en attente')
         ttk.Label(meterrow,textvariable=self.mic_label,width=28).pack(side='left')
@@ -125,11 +141,10 @@ class Coach:
         autobox=ttk.LabelFrame(frame,text='Analyse automatique — optionnelle',padding=10);autobox.pack(fill='x')
         self.monitor=tk.IntVar(value=1);self.interval=tk.DoubleVar(value=4.0);self.expiry=tk.DoubleVar(value=2.5);self.minutes=tk.IntVar(value=5)
         self.onlygame=tk.BooleanVar(value=True);self.speak=tk.BooleanVar(value=True)
-        self.preferences={'monitor':self.monitor,'interval':self.interval,'expiry':self.expiry,'minutes':self.minutes,'onlygame':self.onlygame,'speak':self.speak}
+        self.preferences={'monitor':self.monitor,'interval':self.interval,'expiry':self.expiry,'minutes':self.minutes,'onlygame':self.onlygame,'speak':self.speak,'microphone':self.mic_choice}
         try:
-            saved=updater.read_json(APP_DIR/'settings.json',{})
             for name,var in self.preferences.items():
-                if name in saved:var.set(saved[name])
+                if name in self.saved_settings and name!='microphone':var.set(self.saved_settings[name])
             if self.interval.get()<3:self.interval.set(4.0)
         except (ValueError,TypeError,tk.TclError):pass
         grid=ttk.Frame(autobox);grid.pack(fill='x')
@@ -148,11 +163,55 @@ class Coach:
         self.status=tk.StringVar(value='Mode vocal prêt. L’analyse vision ne tourne pas tant que tu ne demandes rien.')
         self.metric=tk.StringVar(value='Aucune analyse en cours.')
         self.advice=tk.StringVar(value='Dis « Coach… » dans ta question après avoir appuyé sur F8, ou pose directement ta question.')
-        ttk.Label(frame,textvariable=self.status,wraplength=790).pack(anchor='w',pady=(4,8))
+        ttk.Label(frame,textvariable=self.status,wraplength=830).pack(anchor='w',pady=(4,8))
         ttk.Label(frame,textvariable=self.metric).pack(anchor='w')
-        ttk.Label(frame,textvariable=self.advice,font=('Segoe UI',17,'bold'),wraplength=790).pack(anchor='w',pady=10)
+        ttk.Label(frame,textvariable=self.advice,font=('Segoe UI',17,'bold'),wraplength=830).pack(anchor='w',pady=10)
         self.log=tk.Text(frame,height=9,wrap='word');self.log.pack(fill='both',expand=True)
         self.install_hotkey();root.protocol('WM_DELETE_WINDOW',self.close);root.after(50,self.poll)
+
+    def refresh_microphones(self,initial=False):
+        previous=self.mic_choice.get().strip()
+        try:
+            devices=sd.query_devices();default_input=None
+            try:
+                default_input=sd.default.device[0]
+                if default_input is not None:default_input=int(default_input)
+            except Exception:default_input=None
+            values=[];mapping={}
+            for index,dev in enumerate(devices):
+                if int(dev.get('max_input_channels',0) or 0)<=0:continue
+                name=str(dev.get('name','Microphone')).strip()
+                host=''
+                try:host=str(sd.query_hostapis(int(dev.get('hostapi',0))).get('name','')).strip()
+                except Exception:pass
+                label=f'{index} — {name}' + (f' [{host}]' if host else '')
+                values.append(label);mapping[label]=index
+            self.mic_devices=mapping;self.mic_combo['values']=values
+            selected=''
+            if previous in mapping:selected=previous
+            elif previous:
+                old_name=previous.split(' — ',1)[-1].split(' [',1)[0].strip().lower()
+                for label in values:
+                    if label.split(' — ',1)[-1].split(' [',1)[0].strip().lower()==old_name:
+                        selected=label;break
+            if not selected and default_input is not None:
+                selected=next((label for label,idx in mapping.items() if idx==default_input),'')
+            if not selected and values:selected=values[0]
+            self.mic_choice.set(selected)
+            if not initial:self.save_preferences()
+            if selected:self.mic_label.set('Micro sélectionné : '+selected.split(' — ',1)[-1][:45])
+            else:self.mic_label.set('Micro : aucun périphérique d’entrée')
+        except Exception as e:
+            self.mic_devices={};self.mic_combo['values']=();self.mic_choice.set('');self.mic_label.set('Micro : erreur de détection');
+            if not initial:messagebox.showerror('Microphone','Impossible de lister les microphones : '+str(e))
+    def selected_microphone(self):
+        label=self.mic_choice.get().strip()
+        if label not in self.mic_devices:self.refresh_microphones(initial=True);label=self.mic_choice.get().strip()
+        if label not in self.mic_devices:raise RuntimeError('Aucun microphone valide sélectionné.')
+        return self.mic_devices[label]
+    def on_microphone_changed(self):
+        self.save_preferences();label=self.mic_choice.get().strip()
+        if label:self.mic_label.set('Micro sélectionné : '+label.split(' — ',1)[-1][:45])
 
     def install_hotkey(self):
         try:
@@ -178,12 +237,14 @@ class Coach:
         threading.Thread(target=work,daemon=True).start()
     def ask_voice(self):
         if self.voice_busy or self.updating:return
+        try:mic_device=self.selected_microphone()
+        except Exception as e:messagebox.showerror('Microphone',str(e));return
         self.voice_busy=True;self.talk_button.state(['disabled']);sid=self.session_id
         def work():
             try:
-                question=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s),lambda rms,peak,bands:self.emit(sid,'audio_level',rms,peak,bands))
+                question=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s),lambda rms,peak,bands:self.emit(sid,'audio_level',rms,peak,bands),device=mic_device)
                 if not question:
-                    self.emit(sid,'voice_error','Je n’ai pas détecté de phrase. Regarde le spectre micro : s’il ne bouge pas, vérifie le micro sélectionné dans Windows.');return
+                    self.emit(sid,'voice_error','Je n’ai pas détecté de phrase. Vérifie le spectre et le microphone sélectionné.');return
                 self.emit(sid,'question',question);self.emit(sid,'voice_status','📸 Capture de Fortnite et analyse…')
                 image=self.capture_for_ai();ai=LocalAI(self.voice_stop);ai.verify()
                 hist='\n'.join(f'Joueur: {q}\nAcolyte: {a}' for q,a in self.history[-4:])
@@ -228,7 +289,7 @@ class Coach:
         finally:self.client=None;self.emit(sid,'finished')
     def save_preferences(self):
         try:updater.write_json(APP_DIR/'settings.json',{name:var.get() for name,var in self.preferences.items()})
-        except (OSError,tk.TclError):pass
+        except (OSError,tk.TclError,AttributeError):pass
     def configure_repo(self):
         if self.updating:return
         try:config=updater.read_json(APP_DIR/'update-config.json',{})
@@ -259,8 +320,7 @@ class Coach:
             height=3
             if i<active:
                 band=bands[min(len(bands)-1,int(i*len(bands)/20))] if bands else 0.0
-                height=5+int(22*max(level,band*.75))
-                fill='#45d483' if peak<.85 else '#ff9f43'
+                height=5+int(22*max(level,band*.75));fill='#45d483' if peak<.85 else '#ff9f43'
             else:fill='#454545'
             x1=5+i*21;x2=x1+14;self.meter.coords(item,x1,30-height,x2,29);self.meter.itemconfigure(item,fill=fill)
         if peak>=.98:self.mic_label.set('Micro : saturation')
@@ -275,7 +335,8 @@ class Coach:
                 if kind=='audio_level':self.draw_audio(*data)
                 elif kind=='voice_status':self.voice_state.set(data[0])
                 elif kind=='voice_ready':
-                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Prêt. F8 = parler au coach.');self.draw_audio(0,0,[0]*7);self.mic_label.set('Micro : en attente')
+                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Prêt. F8 = parler au coach.');self.draw_audio(0,0,[0]*7)
+                    label=self.mic_choice.get().strip();self.mic_label.set('Micro sélectionné : '+label.split(' — ',1)[-1][:45] if label else 'Micro : en attente')
                 elif kind=='voice_error':
                     self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Erreur : '+data[0]);self.status.set('Acolyte vocal indisponible.');self.draw_audio(0,0,[0]*7)
                 elif kind=='question':self.log.insert('end','\n🎙️ Toi : '+data[0]+'\n');self.log.see('end')
