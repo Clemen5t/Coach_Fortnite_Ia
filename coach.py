@@ -1,4 +1,4 @@
-import base64, ctypes, io, json, os, queue, threading, time
+import base64, ctypes, io, json, os, queue, subprocess, sys, tempfile, threading, time, wave
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
@@ -8,200 +8,272 @@ APP_DIR=Path(__file__).resolve().parent
 DEFAULT_REPO='Clemen5t/Coach_Fortnite_Ia'
 VERSION=(APP_DIR/'VERSION').read_text().strip()
 import mss
+import numpy as np
+import sounddevice as sd
 from PIL import Image, ImageTk
 from local_ai import LocalAI, MODEL, usable, AdviceGate
 
+VOICE_NAME='fr_FR-siwis-medium'
+WHISPER_MODEL='base'
+
 def active_game():
-    buf = ctypes.create_unicode_buffer(512)
-    ctypes.windll.user32.GetWindowTextW(ctypes.windll.user32.GetForegroundWindow(), buf, 512)
+    buf=ctypes.create_unicode_buffer(512)
+    ctypes.windll.user32.GetWindowTextW(ctypes.windll.user32.GetForegroundWindow(),buf,512)
     return 'fortnite' in buf.value.lower()
 
+class VoiceEngine:
+    def __init__(self,app_dir):
+        self.root=Path(app_dir)
+        self.data=self.root/'.voice';self.data.mkdir(exist_ok=True)
+        self.whisper_dir=self.root/'.whisper';self.whisper_dir.mkdir(exist_ok=True)
+        self.whisper=None;self.piper=None;self.lock=threading.RLock()
+    @property
+    def voice_model(self):return self.data/(VOICE_NAME+'.onnx')
+    def ensure_tts(self,status=lambda x:None):
+        if not self.voice_model.exists():
+            status('Premier lancement : téléchargement de la voix IA française Piper…')
+            cmd=[sys.executable,'-m','piper.download_voices',VOICE_NAME,'--data-dir',str(self.data)]
+            result=subprocess.run(cmd,cwd=str(self.data),capture_output=True,text=True,timeout=300)
+            if result.returncode!=0 or not self.voice_model.exists():
+                detail=(result.stderr or result.stdout or 'voix introuvable')[-500:]
+                raise RuntimeError('Téléchargement de la voix Piper impossible : '+detail)
+        if self.piper is None:
+            status('Chargement de la voix IA locale…')
+            from piper import PiperVoice
+            self.piper=PiperVoice.load(str(self.voice_model))
+    def ensure_whisper(self,status=lambda x:None):
+        if self.whisper is None:
+            status('Chargement de Whisper local sur CPU… Le premier lancement peut télécharger le modèle.')
+            from faster_whisper import WhisperModel
+            self.whisper=WhisperModel(WHISPER_MODEL,device='cpu',compute_type='int8',download_root=str(self.whisper_dir))
+    def prepare(self,status=lambda x:None):
+        with self.lock:
+            self.ensure_tts(status);self.ensure_whisper(status)
+    def record_question(self,status=lambda x:None,seconds=4.5):
+        with self.lock:
+            self.ensure_whisper(status)
+            status('🎙️ Parle maintenant…')
+            rate=16000
+            audio=sd.rec(int(seconds*rate),samplerate=rate,channels=1,dtype='float32')
+            sd.wait();samples=np.asarray(audio[:,0],dtype=np.float32)
+            status('Transcription locale…')
+            segments,_=self.whisper.transcribe(samples,language='fr',beam_size=1,best_of=1,
+                vad_filter=True,condition_on_previous_text=False,temperature=0)
+            text=' '.join(s.text.strip() for s in segments if s.text.strip()).strip()
+            return text
+    def speak(self,text,status=lambda x:None):
+        if not text:return
+        with self.lock:
+            self.ensure_tts(status);status('🔊 Acolyte répond…')
+            fd,path=tempfile.mkstemp(suffix='.wav');os.close(fd)
+            try:
+                with wave.open(path,'wb') as wav_file:self.piper.synthesize_wav(text,wav_file)
+                with wave.open(path,'rb') as wav_file:
+                    rate=wav_file.getframerate();channels=wav_file.getnchannels();width=wav_file.getsampwidth()
+                    raw=wav_file.readframes(wav_file.getnframes())
+                if width==2:data=np.frombuffer(raw,dtype=np.int16).astype(np.float32)/32768.0
+                elif width==4:data=np.frombuffer(raw,dtype=np.int32).astype(np.float32)/2147483648.0
+                else:raise RuntimeError('Format audio Piper non pris en charge.')
+                if channels>1:data=data.reshape(-1,channels)
+                sd.play(data,rate);sd.wait()
+            finally:
+                try:os.unlink(path)
+                except OSError:pass
+
 class Coach:
-    def __init__(self, root):
-        self.root, self.events = root, queue.Queue()
-        self.stop_event = threading.Event(); self.worker = None; self.client = None; self.voice = None
-        self.session_id = 0; self.updating = False; self.restart_required = False
-        root.title('Coach Fortnite — IA locale — '+VERSION); root.geometry('800x750')
-        root.configure(bg='#101827')
-        frame = ttk.Frame(root, padding=20); frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='COACH FORTNITE', font=('Segoe UI', 23, 'bold')).pack(anchor='w')
-        ttk.Label(frame, text='Ollama + Gemma 3 4B • analyse locale • aucune clé API').pack(anchor='w', pady=(0,14))
-        self.monitor = tk.IntVar(value=1); self.interval = tk.DoubleVar(value=2.5)
-        self.expiry = tk.DoubleVar(value=2.0); self.minutes = tk.IntVar(value=5)
-        self.onlygame = tk.BooleanVar(value=True); self.speak = tk.BooleanVar(value=True)
-        self.preferences={'monitor':self.monitor,'interval':self.interval,'expiry':self.expiry,
-                          'minutes':self.minutes,'onlygame':self.onlygame,'speak':self.speak}
+    def __init__(self,root):
+        self.root,self.events=root,queue.Queue();self.stop_event=threading.Event();self.voice_stop=threading.Event()
+        self.worker=None;self.client=None;self.session_id=0;self.updating=False;self.restart_required=False
+        self.voice_busy=False;self.voice=VoiceEngine(APP_DIR);self.history=[];self.hotkey_listener=None
+        root.title('Coach Fortnite — Acolyte local — '+VERSION);root.geometry('860x790');root.configure(bg='#101827')
+        frame=ttk.Frame(root,padding=20);frame.pack(fill='both',expand=True)
+        ttk.Label(frame,text='ACOLYTE FORTNITE',font=('Segoe UI',23,'bold')).pack(anchor='w')
+        ttk.Label(frame,text='Whisper + Gemma 3 Vision + Piper • 100 % local après installation • aucune clé API').pack(anchor='w',pady=(0,12))
+
+        voicebox=ttk.LabelFrame(frame,text='Acolyte vocal — mode conseillé',padding=12);voicebox.pack(fill='x',pady=(0,12))
+        ttk.Label(voicebox,text='Appuie sur F8 en jeu ou clique sur le bouton, pose ta question, puis Acolyte regarde l’écran et te répond.').pack(anchor='w')
+        row=ttk.Frame(voicebox);row.pack(fill='x',pady=(8,0))
+        self.talk_button=ttk.Button(row,text='🎙 Parler au coach (F8)',command=self.ask_voice);self.talk_button.pack(side='left')
+        ttk.Button(row,text='Préparer la voix IA',command=self.prepare_voice).pack(side='left',padx=8)
+        self.voice_state=tk.StringVar(value='Prêt. F8 = parler au coach.')
+        ttk.Label(voicebox,textvariable=self.voice_state,wraplength=760).pack(anchor='w',pady=(8,0))
+
+        autobox=ttk.LabelFrame(frame,text='Analyse automatique — optionnelle',padding=10);autobox.pack(fill='x')
+        self.monitor=tk.IntVar(value=1);self.interval=tk.DoubleVar(value=4.0);self.expiry=tk.DoubleVar(value=2.5);self.minutes=tk.IntVar(value=5)
+        self.onlygame=tk.BooleanVar(value=True);self.speak=tk.BooleanVar(value=True)
+        self.preferences={'monitor':self.monitor,'interval':self.interval,'expiry':self.expiry,'minutes':self.minutes,'onlygame':self.onlygame,'speak':self.speak}
         try:
             saved=updater.read_json(APP_DIR/'settings.json',{})
             for name,var in self.preferences.items():
                 if name in saved:var.set(saved[name])
-            # Migration 0.3.4 : l'ancien réglage 1 s maintenait le GPU presque constamment occupé.
-            if self.interval.get() < 2.5:self.interval.set(2.5)
+            if self.interval.get()<3:self.interval.set(4.0)
         except (ValueError,TypeError,tk.TclError):pass
-        grid = ttk.Frame(frame); grid.pack(fill='x')
-        for row,(label,var) in enumerate([('Écran (1, 2…)',self.monitor),('Intervalle minimum (secondes)',self.interval),('Rejeter après (secondes)',self.expiry),('Arrêt automatique (minutes)',self.minutes)]):
-            ttk.Label(grid,text=label).grid(row=row,column=0,sticky='w',pady=4)
-            ttk.Entry(grid,textvariable=var,width=38).grid(row=row,column=1,sticky='ew',padx=10)
-        ttk.Checkbutton(frame,text='Analyser uniquement quand Fortnite est au premier plan',variable=self.onlygame).pack(anchor='w',pady=5)
-        ttk.Checkbutton(frame,text='Lire les conseils à voix haute',variable=self.speak).pack(anchor='w')
-        ttk.Label(frame,text='Mode performance : 640×360 et 2,5 s conseillés pour limiter la perte de FPS.\nLa capture concerne tout l’écran choisi. Ferme les fenêtres privées.').pack(anchor='w',pady=8)
-        buttons = ttk.Frame(frame);buttons.pack(fill='x')
-        self.start_button=ttk.Button(buttons,text='Démarrer',command=self.start);self.start_button.pack(side='left')
-        ttk.Button(buttons,text='Arrêter',command=self.stop).pack(side='left',padx=8)
-        ttk.Button(buttons,text='Aperçu local',command=self.preview).pack(side='left')
-        self.update_button=ttk.Button(buttons,text='Mettre à jour',command=self.update_app)
-        self.update_button.pack(side='left',padx=8)
-        ttk.Button(buttons,text='Dépôt GitHub',command=self.configure_repo).pack(side='left')
-        self.status=tk.StringVar(value='Prêt. Commence par un test de 1 minute.')
-        self.metric=tk.StringVar(value='Capture → réponse complète : —')
-        self.advice=tk.StringVar(value='Aucun conseil')
-        ttk.Label(frame,textvariable=self.status,wraplength=700).pack(anchor='w',pady=14)
+        grid=ttk.Frame(autobox);grid.pack(fill='x')
+        for r,(label,var) in enumerate([('Écran (1, 2…)',self.monitor),('Intervalle auto (secondes)',self.interval),('Rejeter après (secondes)',self.expiry),('Durée auto (minutes)',self.minutes)]):
+            ttk.Label(grid,text=label).grid(row=r,column=0,sticky='w',pady=3);ttk.Entry(grid,textvariable=var,width=28).grid(row=r,column=1,sticky='w',padx=10)
+        ttk.Checkbutton(autobox,text='Analyser seulement quand Fortnite est au premier plan',variable=self.onlygame).pack(anchor='w',pady=3)
+        ttk.Checkbutton(autobox,text='Lire aussi les conseils automatiques avec Piper',variable=self.speak).pack(anchor='w')
+        autorow=ttk.Frame(autobox);autorow.pack(fill='x',pady=(6,0))
+        self.start_button=ttk.Button(autorow,text='Démarrer auto',command=self.start);self.start_button.pack(side='left')
+        ttk.Button(autorow,text='Arrêter auto',command=self.stop).pack(side='left',padx=8)
+        ttk.Button(autorow,text='Aperçu local',command=self.preview).pack(side='left')
+
+        tools=ttk.Frame(frame);tools.pack(fill='x',pady=10)
+        self.update_button=ttk.Button(tools,text='Mettre à jour',command=self.update_app);self.update_button.pack(side='left')
+        ttk.Button(tools,text='Dépôt GitHub',command=self.configure_repo).pack(side='left',padx=8)
+        self.status=tk.StringVar(value='Mode vocal prêt. L’analyse vision ne tourne pas tant que tu ne demandes rien.')
+        self.metric=tk.StringVar(value='Aucune analyse en cours.')
+        self.advice=tk.StringVar(value='Dis « Coach… » dans ta question après avoir appuyé sur F8, ou pose directement ta question.')
+        ttk.Label(frame,textvariable=self.status,wraplength=790).pack(anchor='w',pady=(4,8))
         ttk.Label(frame,textvariable=self.metric).pack(anchor='w')
-        ttk.Label(frame,textvariable=self.advice,font=('Segoe UI',18,'bold'),wraplength=690).pack(anchor='w',pady=15)
-        self.log=tk.Text(frame,height=7,wrap='word');self.log.pack(fill='both',expand=True)
+        ttk.Label(frame,textvariable=self.advice,font=('Segoe UI',17,'bold'),wraplength=790).pack(anchor='w',pady=10)
+        self.log=tk.Text(frame,height=9,wrap='word');self.log.pack(fill='both',expand=True)
+        self.install_hotkey();root.protocol('WM_DELETE_WINDOW',self.close);root.after(50,self.poll)
+
+    def install_hotkey(self):
         try:
-            import win32com.client
-            self.voice=win32com.client.Dispatch('SAPI.SpVoice')
-            for voice in self.voice.GetVoices():
-                if 'french' in voice.GetDescription().lower() or 'français' in voice.GetDescription().lower():
-                    self.voice.Voice=voice;break
-            self.voice.Rate=2
-        except Exception:
-            self.status.set('Voix Windows indisponible : conseils écrits seulement.')
-        root.protocol('WM_DELETE_WINDOW',self.close);root.after(50,self.poll)
+            from pynput import keyboard
+            def on_press(key):
+                if key==keyboard.Key.f8:self.root.after(0,self.ask_voice)
+            self.hotkey_listener=keyboard.Listener(on_press=on_press);self.hotkey_listener.daemon=True;self.hotkey_listener.start()
+        except Exception as e:self.voice_state.set('F8 indisponible : utilise le bouton Parler au coach. '+str(e))
+    def emit(self,sid,kind,*data):self.events.put((sid,kind,data))
+    def set_voice_status(self,text):self.emit(self.session_id,'voice_status',text)
+    def capture_for_ai(self):
+        with mss.mss() as cap:
+            monitor=self.monitor.get()
+            if monitor<1 or monitor>=len(cap.monitors):raise ValueError('Numéro d’écran inexistant. Utilise Aperçu local.')
+            shot=cap.grab(cap.monitors[monitor]);im=Image.frombytes('RGB',shot.size,shot.rgb);im.thumbnail((768,432))
+            data=io.BytesIO();im.save(data,format='JPEG',quality=68,optimize=False)
+            return base64.b64encode(data.getvalue()).decode()
+    def prepare_voice(self):
+        if self.voice_busy:return
+        self.voice_busy=True;self.talk_button.state(['disabled']);sid=self.session_id
+        def work():
+            try:self.voice.prepare(lambda s:self.emit(sid,'voice_status',s));self.emit(sid,'voice_ready')
+            except Exception as e:self.emit(sid,'voice_error',str(e))
+        threading.Thread(target=work,daemon=True).start()
+    def ask_voice(self):
+        if self.voice_busy or self.updating:return
+        self.voice_busy=True;self.talk_button.state(['disabled']);sid=self.session_id
+        def work():
+            ai=None
+            try:
+                question=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s))
+                if not question:
+                    self.emit(sid,'voice_error','Je n’ai pas détecté de phrase. Réessaie en parlant plus près du micro.');return
+                self.emit(sid,'question',question);self.emit(sid,'voice_status','📸 Capture de Fortnite et analyse…')
+                image=self.capture_for_ai();ai=LocalAI(self.voice_stop);ai.verify()
+                hist='\n'.join(f'Joueur: {q}\nAcolyte: {a}' for q,a in self.history[-4:])
+                started=time.monotonic();answer=ai.ask(image,question,hist,timeout=40);elapsed=time.monotonic()-started
+                self.history.append((question,answer));self.history=self.history[-6:]
+                self.emit(sid,'answer',question,answer,elapsed)
+                self.voice.speak(answer,lambda s:self.emit(sid,'voice_status',s));self.emit(sid,'voice_ready')
+            except Exception as e:self.emit(sid,'voice_error',str(e))
+        threading.Thread(target=work,daemon=True).start()
     def preview(self):
         try:
             with mss.mss() as cap:
                 shot=cap.grab(cap.monitors[self.monitor.get()]);im=Image.frombytes('RGB',shot.size,shot.rgb)
-            im.thumbnail((960,540));window=tk.Toplevel(self.root);window.title('Aperçu local — aucune image envoyée')
+            im.thumbnail((960,540));window=tk.Toplevel(self.root);window.title('Aperçu local')
             photo=ImageTk.PhotoImage(im);label=ttk.Label(window,image=photo);label.image=photo;label.pack()
-        except Exception as e: messagebox.showerror('Capture',str(e))
+        except Exception as e:messagebox.showerror('Capture',str(e))
     def start(self):
         if self.updating or self.restart_required or (self.worker and self.worker.is_alive()):return
         try:
             cfg=dict(monitor=self.monitor.get(),interval=self.interval.get(),expiry=self.expiry.get(),minutes=self.minutes.get(),onlygame=self.onlygame.get())
-            if not (1.0<=cfg['interval']<=30 and 0.5<=cfg['expiry']<=10 and 1<=cfg['minutes']<=30 and cfg['monitor']>=1):raise ValueError('Intervalle : 1–30 s ; délai : 0,5–10 s ; durée : 1–30 min.')
+            if not (2<=cfg['interval']<=30 and .5<=cfg['expiry']<=10 and 1<=cfg['minutes']<=30 and cfg['monitor']>=1):raise ValueError('Intervalle : 2–30 s ; délai : 0,5–10 s ; durée : 1–30 min.')
         except Exception as e:messagebox.showerror('Réglages',str(e));return
-        if cfg['interval'] < 2.5:
-            if not messagebox.askyesno('Performance','Sous 2,5 s, Ollama peut faire chuter fortement les FPS de Fortnite. Continuer quand même ?'):return
-        self.save_preferences()
-        self.session_id+=1;self.stop_event.clear();self.start_button.state(['disabled'])
-        self.worker=threading.Thread(target=self.run,args=(cfg,self.session_id),daemon=True);self.worker.start()
+        self.save_preferences();self.session_id+=1;self.stop_event.clear();self.start_button.state(['disabled'])
+        self.worker=threading.Thread(target=self.run_auto,args=(cfg,self.session_id),daemon=True);self.worker.start()
+    def run_auto(self,cfg,sid):
+        client=LocalAI(self.stop_event);self.client=client
+        try:
+            self.emit(sid,'status','Vérification du modèle local…');client.verify();deadline=time.monotonic()+cfg['minutes']*60
+            previous='';count=advice_count=silent_count=0;gate=AdviceGate()
+            while not self.stop_event.is_set() and time.monotonic()<deadline:
+                if cfg['onlygame'] and not active_game():self.emit(sid,'status','Auto en pause : Fortnite n’est pas au premier plan.');self.stop_event.wait(.5);continue
+                started=time.monotonic();image=self.capture_for_ai();context=previous+'. Catégories en pause : '+', '.join(gate.blocked(time.monotonic()))
+                text=client.generate(image,context,timeout=min(30,max(1,deadline-time.monotonic())))
+                if self.stop_event.is_set():break
+                age=time.monotonic()-started;count+=1;valid=usable(text,age,cfg['expiry'],previous) and gate.allow(client.last_category,time.monotonic())
+                if valid:advice_count+=1;previous=text
+                else:silent_count+=1
+                self.emit(sid,'result',age,count,text,valid,client.last_category,advice_count,silent_count)
+                self.stop_event.wait(max(0,cfg['interval']-(time.monotonic()-started)))
+        except Exception as e:
+            if not self.stop_event.is_set():self.emit(sid,'status','Arrêt : '+str(e))
+        finally:self.client=None;self.emit(sid,'finished')
     def save_preferences(self):
         try:updater.write_json(APP_DIR/'settings.json',{name:var.get() for name,var in self.preferences.items()})
         except (OSError,tk.TclError):pass
     def configure_repo(self):
-        if self.updating or self.restart_required:return
+        if self.updating:return
         try:config=updater.read_json(APP_DIR/'update-config.json',{})
         except (ValueError,OSError):config={}
-        repo=simpledialog.askstring('Dépôt GitHub','Lien de ton dépôt PUBLIC Coach Fortnite :',initialvalue=config.get('repo',DEFAULT_REPO),parent=self.root)
+        repo=simpledialog.askstring('Dépôt GitHub','Lien du dépôt PUBLIC :',initialvalue=config.get('repo',DEFAULT_REPO),parent=self.root)
         if not repo:return
         try:
-            config={'repo':updater.normalize_repo(repo),'branch':'main'}
-            updater.write_json(APP_DIR/'update-config.json',config)
-            self.status.set('Dépôt configuré : '+config['repo'])
+            config={'repo':updater.normalize_repo(repo),'branch':'main'};updater.write_json(APP_DIR/'update-config.json',config);self.status.set('Dépôt configuré : '+config['repo'])
         except (ValueError,OSError) as e:messagebox.showerror('GitHub',str(e))
     def update_app(self):
-        if self.updating or self.restart_required:return
-        if self.worker and self.worker.is_alive():
-            messagebox.showinfo('Mise à jour','Arrête la session et attends sa fin avant de mettre à jour.');return
-        try:config=updater.read_json(APP_DIR/'update-config.json',{})
-        except (ValueError,OSError):config={}
-        if not config.get('repo'):
-            try:
-                config={'repo':DEFAULT_REPO,'branch':'main'}
-                updater.write_json(APP_DIR/'update-config.json',config)
-            except OSError as e:messagebox.showerror('GitHub',str(e));return
-        self.save_preferences();self.updating=True
-        self.start_button.state(['disabled']);self.update_button.state(['disabled'])
-        self.status.set('Recherche de mise à jour sur '+config['repo']+'…')
+        if self.updating or self.voice_busy:return
+        if self.worker and self.worker.is_alive():messagebox.showinfo('Mise à jour','Arrête d’abord l’analyse automatique.');return
+        try:config=updater.read_json(APP_DIR/'update-config.json',{}) or {'repo':DEFAULT_REPO,'branch':'main'}
+        except Exception:config={'repo':DEFAULT_REPO,'branch':'main'}
+        if not config.get('repo'):config={'repo':DEFAULT_REPO,'branch':'main'}
+        try:updater.write_json(APP_DIR/'update-config.json',config)
+        except OSError:pass
+        self.save_preferences();self.updating=True;self.update_button.state(['disabled']);self.status.set('Recherche de mise à jour…');sid=self.session_id
         def work():
             try:
                 change=updater.plan(APP_DIR,config['repo'],config.get('branch','main'))
-                if change is None:self.emit(self.session_id,'update_current');return
-                updater.apply(APP_DIR,change)
-                self.emit(self.session_id,'update_ok',change['version'])
-            except Exception as e:self.emit(self.session_id,'update_error',str(e))
+                if change is None:self.emit(sid,'update_current');return
+                updater.apply(APP_DIR,change);self.emit(sid,'update_ok',change['version'])
+            except Exception as e:self.emit(sid,'update_error',str(e))
         threading.Thread(target=work,daemon=True).start()
-    def emit(self,sid,kind,*data): self.events.put((sid,kind,data))
-    def run(self,cfg,sid):
-        client=LocalAI(self.stop_event);self.client=client
-        try:
-            self.emit(sid,'status','Vérification du modèle local…')
-            client.verify()
-            self.emit(sid,'status','Chargement et préchauffage de la vision…')
-            data=io.BytesIO();Image.new('RGB',(640,360),'black').save(data,format='JPEG',quality=60)
-            client.generate(base64.b64encode(data.getvalue()).decode(),timeout=180,warmup=True)
-            if self.stop_event.is_set():return
-            self.emit(sid,'status','Modèle prêt. Retourne dans Fortnite.')
-            deadline=time.monotonic()+cfg['minutes']*60
-            previous='';count=0;advice_count=0;silent_count=0;gate=AdviceGate()
-            with mss.mss() as cap:
-                if cfg['monitor']>=len(cap.monitors):raise ValueError('Numéro d’écran inexistant. Utilise Aperçu local.')
-                while not self.stop_event.is_set() and time.monotonic()<deadline:
-                    if cfg['onlygame'] and not active_game():
-                        self.emit(sid,'status','En pause : Fortnite n’est pas au premier plan.')
-                        self.stop_event.wait(.3);continue
-                    started=time.monotonic();shot=cap.grab(cap.monitors[cfg['monitor']])
-                    im=Image.frombytes('RGB',shot.size,shot.rgb);im.thumbnail((640,360))
-                    data=io.BytesIO();im.save(data,format='JPEG',quality=62,optimize=False)
-                    context=previous+'. Catégories en pause : '+', '.join(gate.blocked(time.monotonic()))
-                    text=client.generate(base64.b64encode(data.getvalue()).decode(),context,timeout=min(30,max(1,deadline-time.monotonic())))
-                    if self.stop_event.is_set() or time.monotonic()>=deadline:break
-                    age=time.monotonic()-started;count+=1
-                    foreground=not cfg['onlygame'] or active_game()
-                    valid=usable(text,age,cfg['expiry'],previous) and foreground and gate.allow(client.last_category,time.monotonic())
-                    if valid:advice_count+=1;previous=text
-                    else:silent_count+=1
-                    self.emit(sid,'result',age,count,text,valid,started,cfg['expiry'],client.last_category,client.last_evidence,advice_count,silent_count)
-                    self.stop_event.wait(max(0,cfg['interval']-(time.monotonic()-started)))
-        except Exception as e:
-            if not self.stop_event.is_set():self.emit(sid,'status','Arrêt : '+str(e))
-        finally:
-            self.client=None;self.emit(sid,'finished')
     def poll(self):
         try:
             while True:
                 sid,kind,data=self.events.get_nowait()
-                if sid!=self.session_id:continue
-                if self.stop_event.is_set() and kind!='finished' and not kind.startswith('update_'):continue
-                if kind.startswith('update_'):
+                if sid!=self.session_id and not kind.startswith('update_'):continue
+                if kind=='voice_status':self.voice_state.set(data[0])
+                elif kind=='voice_ready':self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Prêt. F8 = parler au coach.')
+                elif kind=='voice_error':
+                    self.voice_busy=False;self.talk_button.state(['!disabled']);self.voice_state.set('Erreur : '+data[0]);self.status.set('Acolyte vocal indisponible.')
+                elif kind=='question':self.log.insert('end','\n🎙️ Toi : '+data[0]+'\n');self.log.see('end')
+                elif kind=='answer':
+                    q,a,elapsed=data;self.advice.set(a);self.metric.set(f'Question → réponse vision : {elapsed*1000:.0f} ms');self.status.set('Acolyte a répondu à ta question.')
+                    self.log.insert('end','🤖 Acolyte : '+a+'\n');self.log.see('end')
+                elif kind.startswith('update_'):
                     self.updating=False
                     if kind=='update_ok':
-                        self.restart_required=True;self.status.set('Version '+data[0]+' installée. Ferme puis relance Coach Fortnite.')
-                        messagebox.showinfo('Mise à jour installée','Ferme puis relance Coach Fortnite depuis l’icône du bureau.')
-                    else:
-                        self.update_button.state(['!disabled']);self.start_button.state(['!disabled'])
-                        self.status.set('Déjà à jour.' if kind=='update_current' else 'Échec de mise à jour : '+data[0])
-                    continue
-                if kind=='status':self.status.set(data[0])
-                elif kind=='finished':
-                    self.start_button.state(['!disabled'])
-                    if not self.status.get().startswith('Arrêt :'):self.status.set('Session terminée. Le modèle reste chargé 5 minutes dans Ollama.')
-                elif kind=='result' and not self.stop_event.is_set():
-                    age,count,text,valid,started,expiry,category,evidence,advice_count,silent_count=data
-                    valid=valid and time.monotonic()-started<=expiry and (not self.onlygame.get() or active_game())
-                    self.metric.set(f'{age*1000:.0f} ms | analyses : {count} | conseils : {advice_count} | silence : {silent_count}')
-                    if age>expiry:self.status.set('IA trop lente pour le seuil choisi : conseil ignoré.')
-                    elif valid:self.status.set('Conseil détecté : '+category)
-                    else:self.status.set('Analyse active — aucun conseil suffisamment utile sur cette image.')
+                        self.restart_required=True;self.status.set('Version '+data[0]+' installée. Ferme puis relance Coach Fortnite.');messagebox.showinfo('Mise à jour','Version '+data[0]+' installée. Relance depuis l’icône du bureau.')
+                    else:self.update_button.state(['!disabled']);self.status.set('Déjà à jour.' if kind=='update_current' else 'Échec de mise à jour : '+data[0])
+                elif kind=='status':self.status.set(data[0])
+                elif kind=='finished':self.start_button.state(['!disabled']);self.status.set('Analyse automatique terminée. Le mode vocal reste disponible.')
+                elif kind=='result':
+                    age,count,text,valid,category,advice_count,silent_count=data;self.metric.set(f'{age*1000:.0f} ms | auto : {count} | conseils : {advice_count} | silence : {silent_count}')
                     if valid:
-                        self.advice.set(text)
-                        self.log.insert('end',f'{time.strftime("%H:%M:%S")} · {age:.2f}s · {category} · {text}\n');self.log.see('end')
-                        if self.voice and self.speak.get():self.voice.Speak(text,3)
+                        self.advice.set(text);self.log.insert('end',f'{time.strftime("%H:%M:%S")} · AUTO · {text}\n');self.log.see('end')
+                        if self.speak.get() and not self.voice_busy:threading.Thread(target=self.voice.speak,args=(text,lambda s:self.emit(self.session_id,'voice_status',s)),daemon=True).start()
         except queue.Empty:pass
         self.root.after(50,self.poll)
     def stop(self):
-        self.stop_event.set();self.advice.set('En pause');self.status.set('Arrêt en cours…')
-        if self.voice:self.voice.Speak('',3)
+        self.stop_event.set();self.status.set('Arrêt de l’analyse automatique…')
         if self.client:threading.Thread(target=self.client.cancel,daemon=True).start()
     def close(self):
-        if self.updating:
-            messagebox.showinfo('Mise à jour','Attends la fin de la mise à jour avant de fermer.');return
-        self.save_preferences();self.stop();self.root.destroy()
+        if self.updating:messagebox.showinfo('Mise à jour','Attends la fin de la mise à jour.');return
+        self.save_preferences();self.stop_event.set();self.voice_stop.set()
+        if self.hotkey_listener:
+            try:self.hotkey_listener.stop()
+            except Exception:pass
+        try:sd.stop()
+        except Exception:pass
+        self.root.destroy()
 
 if __name__=='__main__':
-    if os.name!='nt':raise SystemExit('Ce prototype est destiné à Windows.')
+    if os.name!='nt':raise SystemExit('Cette version est destinée à Windows.')
     try:ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:pass
     root=tk.Tk();Coach(root);root.mainloop()
