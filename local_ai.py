@@ -1,4 +1,5 @@
 """IA locale Acolyte : conversation, mémoire de session et vision Fortnite."""
+from difflib import SequenceMatcher
 import http.client
 import json
 import socket
@@ -7,11 +8,13 @@ import unicodedata
 
 MODEL = 'gemma3:4b'
 
-# coach.py demande encore Whisper "base". On remplace ce chargement par "small"
-# sans casser l'updater historique, et on ajoute un contexte de vocabulaire français.
+# Contexte de transcription pour les phrases fréquemment utilisées avec Acolyte.
+# coach.py charge encore "base" : on redirige vers "small" sans casser l'updater.
 WHISPER_HINT = (
     "Acolyte, Fortnite, créatif, salon, Battle Royale, Zéro construction, build, edit, "
-    "aim, inventaire, mini-carte, bouclier, soins, recharge, rotation, analyse mon jeu."
+    "aim, inventaire, mini-carte, bouclier, soins, recharge, rotation, analyse mon jeu, "
+    "te souviens-tu, tu te rappelles, rappelle-toi, dis-moi ce que je t'ai dit avant, "
+    "dis-moi ce que je t'ai demandé, qu'est-ce que je viens de dire."
 )
 try:
     import faster_whisper as _faster_whisper
@@ -25,6 +28,10 @@ try:
 
             def transcribe(self, audio, *args, **kwargs):
                 kwargs.setdefault('initial_prompt', WHISPER_HINT)
+                try:
+                    kwargs['beam_size'] = max(3, int(kwargs.get('beam_size', 1) or 1))
+                except Exception:
+                    kwargs['beam_size'] = 3
                 return self._inner.transcribe(audio, *args, **kwargs)
 
             def __getattr__(self, name):
@@ -33,8 +40,6 @@ try:
         _faster_whisper.WhisperModel = _AcolyteWhisperModel
         _faster_whisper._acolyte_whisper_patch = True
 except Exception:
-    # Les tests ou une installation incomplète peuvent ne pas avoir faster-whisper.
-    # VoiceEngine affichera alors son erreur normale au moment du chargement.
     pass
 
 
@@ -63,7 +68,9 @@ peux l'analyser si le joueur te le demande.
 
 Le bloc HISTORIQUE RÉEL est ta seule source concernant les messages précédents.
 N'invente jamais une ancienne question, un réglage, un sujet ou un souvenir absent de
-cet historique. Ne prétends pas non plus avoir une activité ou une pensée en arrière-plan.
+cet historique. Ne prétends jamais avoir une activité, une pensée, un projet ou une
+action en arrière-plan. Tu n'étais pas « en train de préparer une stratégie », « penser
+à la prochaine zone » ou faire quoi que ce soit avant que le joueur te parle.
 
 Tu peux parler de Fortnite, entraînement, stratégie, réglages, matériel, questions
 générales ou simplement discuter. Réponds directement au message actuel et utilise
@@ -123,7 +130,6 @@ def _normalize(text):
 
 
 def _clean(text):
-    """Normalisation tolérante aux apostrophes et à la ponctuation de Whisper."""
     value = _normalize(text)
     value = ''.join(c if c.isalnum() else ' ' for c in value)
     return ' '.join(value.split())
@@ -211,42 +217,49 @@ def _history_messages(history):
     return users, assistants
 
 
+_ASSISTANT_MEMORY = (
+    'qu est ce que tu m as repondu', 'que m as tu repondu', 'ta derniere reponse',
+    'tu m as repondu quoi', 'c etait quoi ta reponse', 'tu as repondu quoi avant'
+)
+_TOPIC_MEMORY = (
+    'on parlait de quoi', 'de quoi on parlait', 'quel etait notre sujet',
+    'c etait quoi le sujet', 'on disait quoi avant'
+)
+_USER_MEMORY = (
+    'tu te rappelle', 'te rappelle tu', 'tu te rappelles', 'te rappelles tu',
+    'tu te souviens', 'te souviens tu', 'rappelle toi', 'rappelle moi',
+    'te souviens tu de ce que je t ai demande',
+    'tu te souviens de ce que je t ai demande',
+    'ce que je viens de te demander', 'ce que je t ai demande',
+    'ce que j ai eu a te demander', 'ce que je t ai dit avant',
+    'ce que j ai dit avant', 'ce que je viens de dire', 'ce que je t ai dit',
+    'dis moi ce que je t ai dit', 'dis moi ce que j ai dit',
+    'j ai dit quoi avant', 'je t ai dit quoi avant', 'j ai demande quoi avant',
+    'ma derniere question', 'qu est ce que je viens de te demander',
+    'que viens je de te demander', 'c etait quoi ma question',
+    'quelle etait ma question', 'repete ce que je viens de dire'
+)
+
+
+def _fuzzy_ratio(text, phrases):
+    if not text:
+        return 0.0
+    return max((SequenceMatcher(None, text, phrase).ratio() for phrase in phrases), default=0.0)
+
+
 def _memory_request_kind(question):
-    """Détecte les demandes de rappel, même avec une transcription imparfaite."""
+    """Détecte les demandes de rappel, y compris une transcription Whisper déformée."""
     q = _clean(question)
     words = set(q.split())
 
-    assistant_phrases = (
-        'qu est ce que tu m as repondu', 'que m as tu repondu', 'ta derniere reponse',
-        'tu m as repondu quoi', 'c etait quoi ta reponse', 'tu as repondu quoi avant'
-    )
-    if any(p in q for p in assistant_phrases):
+    if any(p in q for p in _ASSISTANT_MEMORY) or _fuzzy_ratio(q, _ASSISTANT_MEMORY) >= 0.78:
         return 'assistant'
-
-    topic_phrases = (
-        'on parlait de quoi', 'de quoi on parlait', 'quel etait notre sujet',
-        'c etait quoi le sujet', 'on disait quoi avant'
-    )
-    if any(p in q for p in topic_phrases):
+    if any(p in q for p in _TOPIC_MEMORY) or _fuzzy_ratio(q, _TOPIC_MEMORY) >= 0.80:
         return 'topic'
-
-    user_phrases = (
-        'tu te rappelle', 'te rappelle tu', 'tu te rappelles', 'te rappelles tu',
-        'tu te souviens', 'te souviens tu', 'rappelle toi', 'rappelle moi',
-        'ce que je viens de te demander', 'ce que je t ai demande',
-        'ce que j ai eu a te demander', 'ce que je t ai dit avant',
-        'ce que j ai dit avant', 'ce que je viens de dire', 'ce que je t ai dit',
-        'dis moi ce que je t ai dit', 'dis moi ce que j ai dit',
-        'j ai dit quoi avant', 'je t ai dit quoi avant', 'j ai demande quoi avant',
-        'ma derniere question', 'qu est ce que je viens de te demander',
-        'que viens je de te demander', 'c etait quoi ma question',
-        'quelle etait ma question', 'repete ce que je viens de dire'
-    )
-    if any(p in q for p in user_phrases):
+    if any(p in q for p in _USER_MEMORY) or _fuzzy_ratio(q, _USER_MEMORY) >= 0.70:
         return 'user'
 
-    # Heuristique tolérante aux petites erreurs Whisper : notion de rappel + passé.
-    recall = any(stem in q for stem in ('rappel', 'souven', 'memoir'))
+    recall = any(stem in q for stem in ('rappel', 'souven', 'souvien', 'memoir'))
     past = any(p in q for p in ('avant', 'juste avant', 'precedent', 'derniere', 'dernier',
                                 'viens de', 'tout a l heure'))
     speech = bool(words.intersection({'dit', 'dire', 'demande', 'demander', 'question',
@@ -256,6 +269,13 @@ def _memory_request_kind(question):
     if past and speech and ('je' in words or 'moi' in words or 'tu' in words):
         return 'assistant' if ('repondu' in words or 'reponse' in words) else 'user'
     return None
+
+
+def _last_non_memory_user(users):
+    for text in reversed(users):
+        if _memory_request_kind(text) is None:
+            return text
+    return users[-1] if users else ''
 
 
 def _direct_memory_answer(question, history):
@@ -269,9 +289,22 @@ def _direct_memory_answer(question, history):
         if assistants:
             return 'Ma dernière réponse était : « ' + assistants[-1] + ' »'
         return "Je n’ai pas encore de réponse précédente enregistrée dans cette session."
+    previous = _last_non_memory_user(users)
     if kind == 'topic':
-        return 'Juste avant, on parlait de ton message : « ' + users[-1] + ' »'
-    return 'Oui. Juste avant, tu m’as dit : « ' + users[-1] + ' »'
+        return 'Juste avant, on parlait de ton message : « ' + previous + ' »'
+    return 'Oui. Juste avant, tu m’as dit : « ' + previous + ' »'
+
+
+def _smalltalk_answer(question):
+    """Réponses déterministes pour éviter d'inventer une fausse activité d'Acolyte."""
+    q = _clean(question)
+    if len(q.split()) <= 10 and (
+        q in {'ca va', 'ca va bien', 'tu vas bien', 'comment tu vas', 'comment ca va'}
+        or 'est ce que ca va' in q
+        or 'est ce que tu vas bien' in q
+    ):
+        return 'Oui, ça va bien, merci. Et toi ?'
+    return None
 
 
 class AdviceGate:
@@ -369,6 +402,9 @@ class LocalAI:
         memory_answer = _direct_memory_answer(question, history)
         if memory_answer is not None:
             return memory_answer
+        smalltalk = _smalltalk_answer(question)
+        if smalltalk is not None:
+            return smalltalk
 
         prompt = 'MESSAGE ACTUEL DU JOUEUR : ' + question.strip()
         if history.strip():
@@ -378,7 +414,7 @@ class LocalAI:
         result = self.request('/api/generate', {
             'model': MODEL, 'stream': False, 'keep_alive': '5m',
             'system': CONVERSATION_PROMPT, 'prompt': prompt,
-            'options': {'num_ctx': 3072, 'num_predict': 220, 'temperature': 0.15}}, timeout=timeout)
+            'options': {'num_ctx': 3072, 'num_predict': 220, 'temperature': 0.12}}, timeout=timeout)
         if not result.get('done'):
             raise RuntimeError('Réponse Ollama incomplète.')
         text = ' '.join(str(result.get('response', '')).strip().split())
@@ -432,8 +468,7 @@ class LocalAI:
     def ask(self, image, question, history='', timeout=30):
         question = question.strip()
 
-        # La mémoire passe AVANT le routage vision. Une transcription imparfaite contenant
-        # des mots comme « ce que je fais » ne doit pas déclencher une fausse capture.
+        # La mémoire a priorité absolue sur le routage vision.
         memory_answer = _direct_memory_answer(question, history)
         if memory_answer is not None:
             self.used_vision = False
