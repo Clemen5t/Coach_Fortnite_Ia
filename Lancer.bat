@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
+set "SILENT=0"
+if /I "%~1"=="--silent" set "SILENT=1"
 set "COACH_PY="
 set "COACH_ARGS="
 if exist ".venv\Scripts\python.exe" (
@@ -57,5 +59,5 @@ if errorlevel 1 (
 )
 ".venv\Scripts\python.exe" coach.py
 :end
-pause
+if "%SILENT%"=="0" pause
 endlocal
