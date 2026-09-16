@@ -1,4 +1,5 @@
 """IA locale Acolyte : conversation, mémoire de session et vision Fortnite."""
+from datetime import date
 from difflib import SequenceMatcher
 import http.client
 import json
@@ -28,20 +29,16 @@ N'invente jamais une ancienne question, un souvenir, un nom, un classement ou un
 Ne prétends jamais avoir une activité, une pensée ou une action en arrière-plan.
 
 RÉSOLUTION DES RÉFÉRENCES : si le prompt contient « ENTITÉ COURANTE RÉSOLUE », cette
-entité est prioritaire pour comprendre les pronoms du MESSAGE ACTUEL. « il », « elle »,
-« lui », « son », « sa », « ses », « ce joueur », « cette personne », « ce pseudo » et
-« ce nom » doivent alors être compris comme parlant de cette entité, sauf contradiction
-explicite dans la phrase. Ne transforme jamais « son pseudo » en « ton pseudo ».
-Réponds DIRECTEMENT à la question sur cette entité. Ne réponds jamais par une simple
-phrase générique comme « Ok, compris », « je suis prêt à discuter » ou « dis-moi ce que
-tu veux » lorsqu'une vraie question a été posée.
+entité est prioritaire pour comprendre « il », « elle », « lui », « son », « sa », « ses »,
+« le joueur », « ce joueur », « cette personne », « ce pseudo » et « ce nom ». Une correction
+explicite du joueur remplace l'interprétation précédente. Si l'entité est marquée comme
+« joueur Fortnite », ne la transforme jamais en bot logiciel, assistant ou programme.
+Réponds directement à la vraie question posée. Si tu ne connais pas le fait avec assez de
+confiance, dis-le clairement au lieu de changer de sujet.
 
-FAITS : tu n'as aucun accès Internet ni classement en direct. Pour une information qui
-exige des données actuelles ou récentes (meilleur joueur actuel, classement, dernier
-résultat, équipe actuelle si incertaine, etc.), dis que tu ne peux pas la confirmer sans
-source récente. Pour un fait stable (origine, nationalité, vrai nom, ancien parcours),
-réponds seulement si tu le connais avec assez de confiance ; sinon dis simplement que tu
-n'es pas sûr sans source fiable. N'invente jamais un détail pour remplir le vide.
+ACTUALITÉ : tu n'as aucun accès Internet ni classement en direct. Pour une donnée actuelle
+ou récente (classement, meilleur joueur actuel, dernier résultat, équipe actuelle si
+incertaine), dis que tu ne peux pas la confirmer sans source récente. N'invente pas.
 
 Style : français naturel, oral, direct. En général 1 à 4 phrases courtes. Pas de JSON."""
 
@@ -144,17 +141,23 @@ def needs_vision(question):
     return _needs_vision(question)
 
 
-def _history_messages(history):
-    users, assistants = [], []
+def _history_turns(history):
+    turns = []
     for raw in str(history or '').splitlines():
         line = raw.strip()
         if line.startswith('Joueur:'):
             text = line[len('Joueur:'):].strip()
-            if text: users.append(text)
+            if text: turns.append(('user', text))
         elif line.startswith('Acolyte:'):
             text = line[len('Acolyte:'):].strip()
-            if text: assistants.append(text)
-    return users, assistants
+            if text: turns.append(('assistant', text))
+    return turns
+
+
+def _history_messages(history):
+    turns = _history_turns(history)
+    return ([text for role, text in turns if role == 'user'],
+            [text for role, text in turns if role == 'assistant'])
 
 
 _ASSISTANT_MEMORY = ('qu est ce que tu m as repondu','que m as tu repondu','ta derniere reponse',
@@ -230,6 +233,10 @@ def _current_facts_guard(question):
     return None
 
 
+_ENTITY_ALIASES = {
+    'peter bot': 'Peterbot',
+    'peterbot': 'Peterbot',
+}
 _ENTITY_STOP = {
     'Acolyte','Fortnite','Battle','Royale','Creative','Créatif','Salon','Oui','Non','Salut','Bonjour',
     'Je','Tu','Il','Elle','En','Et','Mais','Le','La','Les','Un','Une','Ce','Cette','C','Ça','Ca',
@@ -237,63 +244,132 @@ _ENTITY_STOP = {
 }
 
 
-def _recent_entity(history):
-    """Extrait prudemment le nom/pseudo le plus récemment cité."""
-    lines = []
-    for raw in str(history or '').splitlines():
-        if ':' in raw:
-            lines.append(raw.split(':', 1)[1].strip())
-    for text in reversed(lines[-10:]):
-        quoted = re.findall(r'[«\"“]([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})[»\"”]', text)
-        if quoted:
-            return quoted[-1]
-        tokens = re.findall(r'\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,23}\b', text)
-        for token in reversed(tokens):
-            if token in _ENTITY_STOP:
-                continue
-            parts=token.split('-')
-            if len(parts) >= 3 and all(len(part) == 1 and part.isalnum() for part in parts):
-                token=''.join(parts).title()
-            return token
+def _canonical_entity(name):
+    value = ' '.join(str(name or '').strip(' .,!?:;«»\"“”').split())
+    if not value:
+        return ''
+    alias = _ENTITY_ALIASES.get(_clean(value))
+    return alias or value
+
+
+def _extract_entity_from_text(text):
+    """Extrait un pseudo/nom explicite sans casser les pseudos composés."""
+    raw = str(text or '').strip()
+    if not raw:
+        return ''
+
+    match = re.search(r'\b(?:[Ll]e\s+|[Ll]a\s+)?(?:joueur|joueuse)\s+([A-ZÀ-ÖØ-Þ][\wÀ-ÖØ-öø-ÿ\-]*(?:\s+[A-ZÀ-ÖØ-Þ][\wÀ-ÖØ-öø-ÿ\-]*){0,2})', raw)
+    if match:
+        return _canonical_entity(match.group(1))
+
+    patterns = (
+        r'(?i)\bconnais[\s-]*tu\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})?)',
+        r'(?i)\btu\s+connais\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})?)',
+        r'(?i)\bje\s+(?:parle|parlais|pensais)\s+(?:de|a|à)\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})?)',
+        r'(?i)\btu\s+parles\s+de\s+([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})?)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw)
+        if match:
+            candidate = match.group(1).strip()
+            parts = candidate.split()
+            if len(parts) == 2 and _clean(parts[1]) in {'fortnite','joueur','player','non','bot'} and _clean(candidate) != 'peter bot':
+                candidate = parts[0]
+            return _canonical_entity(candidate)
+
+    tokens = re.findall(r'\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,23}\b', raw)
+    tokens = [token for token in tokens if token not in _ENTITY_STOP]
+    if tokens:
+        if len(tokens) >= 2:
+            pair = _canonical_entity(tokens[-2] + ' ' + tokens[-1])
+            if _clean(tokens[-2] + ' ' + tokens[-1]) in _ENTITY_ALIASES:
+                return pair
+        return _canonical_entity(tokens[-1])
     return ''
 
 
+def _entity_context(history):
+    """Retourne (entité, type). Les corrections du joueur priment sur les réponses IA."""
+    turns = _history_turns(history)
+    for role, text in reversed(turns[-12:]):
+        if role != 'user':
+            continue
+        entity = _extract_entity_from_text(text)
+        if not entity:
+            continue
+        q = _clean(text)
+        descriptor = ''
+        if 'fortnite' in q or 'joueur' in q or 'joueuse' in q or 'non le bot' in q or 'pas le bot' in q:
+            descriptor = 'joueur Fortnite'
+        return entity, descriptor
+    for role, text in reversed(turns[-8:]):
+        if role != 'assistant':
+            continue
+        entity = _extract_entity_from_text(text)
+        if entity:
+            return entity, ''
+    return '', ''
+
+
 def _reference_entity(question, history):
-    """Résout les suivis comme « Il vient d'où ? » vers la dernière entité explicite."""
     q = _clean(question)
-    if not q:
-        return ''
-    if q.startswith(('il faut ','il faudrait ','il y a ','il existe ','il semble ','il me faut ')):
-        return ''
+    if not q or q.startswith(('il faut ','il faudrait ','il y a ','il existe ','il semble ','il me faut ')):
+        return '', ''
     words = set(q.split())
     explicit = any(p in q for p in (
-        'ce joueur','cette joueuse','cette personne','ce gars','ce mec','ce pseudo','ce nom',
-        'son pseudo','son nom','sa nationalite','son pays','son equipe','ses resultats'))
+        'le joueur','la joueuse','ce joueur','cette joueuse','cette personne','ce gars','ce mec',
+        'ce pseudo','ce nom','son pseudo','son nom','sa nationalite','son pays','son equipe',
+        'ses resultats','vient d ou','d ou vient','quel age','age a t il','age a il'))
     pronoun = bool(words.intersection({'il','elle','lui','son','sa','ses'}))
     if not (explicit or pronoun):
-        return ''
-    return _recent_entity(history)
+        return '', ''
+    return _entity_context(history)
+
+
+def _peterbot_fact(question, entity):
+    """Petit cache local de faits stables pour éviter la confusion Peterbot/bot logiciel."""
+    if _clean(entity) != 'peterbot':
+        return None
+    q = _clean(question)
+    if any(p in q for p in ('vient d ou','d ou vient','origine','nationalite','quel pays')):
+        return 'Peterbot est un joueur Fortnite américano-hongrois, associé aux États-Unis et à la Hongrie.'
+    if any(p in q for p in ('vrai nom','nom reel','son nom complet')):
+        return 'Le vrai nom de Peterbot est Peter Kata.'
+    if any(p in q for p in ('quel age','age a t il','age a il','son age')):
+        born = date(2007, 6, 20)
+        today = date.today()
+        age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+        return f'Peterbot a {age} ans ; il est né le 20 juin 2007.'
+    return None
 
 
 def _direct_reference_answer(question, history):
     q = _clean(question)
+    current = _extract_entity_from_text(question)
+    if current and _clean(current) == 'peterbot' and any(p in q for p in ('connais tu','tu connais')):
+        return 'Oui. Peterbot est un joueur professionnel Fortnite, de son vrai nom Peter Kata.'
+
+    entity, descriptor = _reference_entity(question, history)
+    if not entity:
+        return None
+
+    fact = _peterbot_fact(question, entity)
+    if fact:
+        return fact
+
     spelling = any(stem in q for stem in ('epelle','epele','epeler','lettre par lettre'))
     reference = any(p in q for p in ('son pseudo','son nom','ce pseudo','ce nom','le pseudo','le nom'))
     if spelling and reference:
-        entity = _reference_entity(question, history) or _recent_entity(history)
-        if not entity:
-            return "Je ne sais pas avec certitude quel nom tu veux que j’épelle."
-        return f"{entity} s’épelle {'-'.join(entity.upper())}."
+        compact = entity.replace(' ', '')
+        return f"{entity} s’épelle {'-'.join(compact.upper())}."
     return None
 
 
 def _looks_like_nonanswer(text):
     q = _clean(text)
-    patterns = (
-        'ok compris','d accord compris','je suis pret a discuter','je suis pret a parler',
-        'dis moi ce que tu veux','qu est ce que tu veux savoir','je suis tout oui',
-        'on peut en discuter','vas y je t ecoute','je t ecoute'
-    )
+    patterns = ('ok compris','d accord compris','je suis pret a discuter','je suis pret a parler',
+                'dis moi ce que tu veux','qu est ce que tu veux savoir','je suis tout oui',
+                'on peut en discuter','vas y je t ecoute','je t ecoute')
     return any(p in q for p in patterns)
 
 
@@ -378,21 +454,23 @@ class LocalAI:
             if direct is not None: return direct
 
         prompt='MESSAGE ACTUEL DU JOUEUR : '+question.strip()
-        prompt += ('\nHISTORIQUE RÉEL DE CETTE SESSION :\n'+history[-3400:]) if history.strip() else '\nHISTORIQUE RÉEL : aucun message précédent.'
-        entity=_reference_entity(question,history)
+        prompt += ('\nHISTORIQUE RÉEL DE CETTE SESSION :\n'+history[-3600:]) if history.strip() else '\nHISTORIQUE RÉEL : aucun message précédent.'
+        entity, descriptor=_reference_entity(question,history)
         if entity:
+            detail = entity + (f' ({descriptor})' if descriptor else '')
             prompt += (
-                '\nENTITÉ COURANTE RÉSOLUE : '+entity+
-                '\nINTERPRÉTATION OBLIGATOIRE : les pronoms et possessifs pertinents du MESSAGE ACTUEL '
-                'désignent '+entity+'. Réponds à la question AU SUJET DE '+entity+'. '
-                'Si tu ne connais pas le fait demandé avec confiance, dis-le clairement au lieu de changer de sujet.'
+                '\nENTITÉ COURANTE RÉSOLUE : '+detail+
+                '\nINTERPRÉTATION OBLIGATOIRE : les pronoms et références pertinents du MESSAGE ACTUEL '
+                'désignent '+entity+'. '
             )
+            if descriptor == 'joueur Fortnite':
+                prompt += entity+' est ici une PERSONNE / JOUEUR FORTNITE, PAS un bot logiciel. '
+            prompt += 'Réponds directement à la question. Si tu ne sais pas, dis-le clairement.'
 
-        text=self._chat_generate(prompt, timeout, temperature=.08)
+        text=self._chat_generate(prompt, timeout, temperature=.06)
         if entity and _looks_like_nonanswer(text):
-            retry=(prompt+'\nTA RÉPONSE PRÉCÉDENTE N’A PAS RÉPONDU À LA QUESTION. '
-                   'Réponds maintenant directement au sujet de '+entity+'. '
-                   'Si tu ne sais pas, dis « Je ne suis pas sûr sans source fiable. »')
+            retry=(prompt+'\nTA RÉPONSE PRÉCÉDENTE N’A PAS RÉPONDU. Réponds maintenant directement au sujet de '
+                   +entity+'. Si tu ne sais pas, dis « Je ne suis pas sûr sans source fiable. »')
             text=self._chat_generate(retry, timeout, temperature=0)
         return text
 
@@ -426,11 +504,13 @@ class LocalAI:
 
     def ask(self, image, question, history='', timeout=30):
         question=question.strip()
-        direct=_direct_memory_answer(question,history) or _direct_reference_answer(question,history) or _smalltalk_answer(question) or _current_facts_guard(question)
-        if direct is not None:
+        memory=_direct_memory_answer(question,history)
+        if memory is not None:
             self.used_vision=False; self.last_scene='unknown'; self.last_scene_confidence='low'
-            self.last_observation='Conversation sans vision.'; return direct
-        if not _needs_vision(question): return self.chat(question,history,timeout=timeout)
+            self.last_observation='Rappel direct depuis la mémoire réelle de la session.'
+            return memory
+        if not _needs_vision(question):
+            return self.chat(question,history,timeout=timeout)
         self.used_vision=True
         if not image: return "J’ai besoin d’une capture d’écran pour répondre à cette question visuelle."
         scene_timeout=max(6,min(20,int(timeout*.45)))
