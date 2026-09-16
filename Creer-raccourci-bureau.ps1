@@ -17,29 +17,34 @@ if (-not (Test-Path $VbsPath)) {
 Add-Type -AssemblyName System.Drawing
 
 if (-not (Test-Path $IconPath)) {
-    $bitmap = New-Object System.Drawing.Bitmap 256, 256
+    $bitmap = [System.Drawing.Bitmap]::new(256, 256)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
-    $background = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(16,24,39))
-    $foreground = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(52,211,153), 12)
+    $background = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(16, 24, 39))
+    $foreground = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+    $pen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(52, 211, 153), 12)
 
     $graphics.FillRectangle($background, 0, 0, 256, 256)
     $graphics.DrawRectangle($pen, 18, 18, 220, 220)
 
-    $font = New-Object System.Drawing.Font('Segoe UI', 86, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $format = New-Object System.Drawing.StringFormat
+    $font = [System.Drawing.Font]::new('Segoe UI', 86, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+    $format = [System.Drawing.StringFormat]::new()
     $format.Alignment = [System.Drawing.StringAlignment]::Center
     $format.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $graphics.DrawString('CF', $font, $foreground, (New-Object System.Drawing.RectangleF(0,0,256,256)), $format)
+    $rect = [System.Drawing.RectangleF]::new(0, 0, 256, 256)
+    $graphics.DrawString('CF', $font, $foreground, $rect, $format)
 
     $handle = $bitmap.GetHicon()
     $icon = [System.Drawing.Icon]::FromHandle($handle)
     $stream = [System.IO.File]::Open($IconPath, [System.IO.FileMode]::Create)
-    $icon.Save($stream)
-    $stream.Close()
+    try {
+        $icon.Save($stream)
+    }
+    finally {
+        $stream.Dispose()
+    }
 
     $format.Dispose()
     $font.Dispose()
