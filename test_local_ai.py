@@ -6,6 +6,7 @@ from local_ai import LocalAI, usable, parse_advice, AdviceGate
 
 class Handler(BaseHTTPRequestHandler):
     mode='ok';seen=[];entered=threading.Event();release=threading.Event()
+    scene='lobby';confidence='high'
     def log_message(self,*args):pass
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -17,10 +18,18 @@ class Handler(BaseHTTPRequestHandler):
             if Handler.mode=='missing':status=404;result={'error':'not found'}
         else:
             if Handler.mode=='slow':Handler.entered.set();Handler.release.wait(3)
-            if 'Question du joueur :' in body.get('prompt',''):
-                result={'done':True,'done_reason':'stop','response':'Recule derrière le mur à droite, puis recharge.'}
+            prompt=body.get('prompt','')
+            if 'CLASSIFIE uniquement' in prompt:
+                result={'done':True,'done_reason':'stop','response':json.dumps({
+                    'scene':Handler.scene,'confidence':Handler.confidence,
+                    'evidence':'Personnage présenté au centre avec interface de salon.'})}
+            elif 'QUESTION DU JOUEUR' in prompt:
+                result={'done':True,'done_reason':'stop','response':json.dumps({
+                    'answer':'Je vois le salon, donc ne prends aucun fight ici.'})}
             else:
-                result={'done':True,'done_reason':'stop','response':json.dumps({'category':'cover','evidence':'Impacts visibles sur le mur droit','advice':'Passe derrière le mur à droite.'})}
+                result={'done':True,'done_reason':'stop','response':json.dumps({
+                    'category':'cover','evidence':'Impacts visibles sur le mur droit',
+                    'advice':'Passe derrière le mur à droite.'})}
             if Handler.mode=='truncated':result['done_reason']='length'
         data=json.dumps(result).encode()
         try:
@@ -35,15 +44,33 @@ class Tests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.server.shutdown();cls.server.server_close()
     def setUp(self):
-        Handler.mode='ok';Handler.seen=[];Handler.entered.clear();Handler.release.clear()
+        Handler.mode='ok';Handler.scene='lobby';Handler.confidence='high'
+        Handler.seen=[];Handler.entered.clear();Handler.release.clear()
         self.client=LocalAI(threading.Event(),self.server.server_port)
     def test_local_image_request(self):
         self.client.verify();self.assertEqual(self.client.generate('dGVzdA=='),'Passe derrière le mur à droite.')
         path,body=Handler.seen[-1];self.assertEqual(path,'/api/generate');self.assertEqual(body['images'],['dGVzdA==']);self.assertFalse(body['stream'])
-    def test_ask_uses_question_and_image(self):
+    def test_ask_classifies_then_answers(self):
         text=self.client.ask('aW1hZ2U=','Je prends le fight ?','Joueur: avant')
-        self.assertIn('mur à droite',text)
-        _,body=Handler.seen[-1];self.assertEqual(body['images'],['aW1hZ2U=']);self.assertIn('Je prends le fight ?',body['prompt']);self.assertIn('Contexte récent',body['prompt'])
+        self.assertIn('salon',text);self.assertEqual(self.client.last_scene,'lobby')
+        generate_calls=[body for path,body in Handler.seen if path=='/api/generate']
+        self.assertEqual(len(generate_calls),2)
+        self.assertIn('CLASSIFIE uniquement',generate_calls[0]['prompt'])
+        self.assertIn('QUESTION DU JOUEUR',generate_calls[1]['prompt'])
+        self.assertIn('SCÈNE IMPOSÉE',generate_calls[1]['prompt'])
+        self.assertIn('Je prends le fight ?',generate_calls[1]['prompt'])
+    def test_mode_question_uses_classifier_directly(self):
+        text=self.client.ask('aW1hZ2U=','Est-ce que je suis en créatif ou dans le salon ?')
+        self.assertIn('salon Fortnite',text)
+        generate_calls=[body for path,body in Handler.seen if path=='/api/generate']
+        self.assertEqual(len(generate_calls),1)
+    def test_low_confidence_becomes_unknown(self):
+        Handler.scene='creative';Handler.confidence='low'
+        text=self.client.ask('aW1hZ2U=','Est-ce que je suis en créatif ou dans le salon ?')
+        self.assertIn('ne peux pas déterminer',text);self.assertEqual(self.client.last_scene,'unknown')
+    def test_general_lobby_analysis_is_safe(self):
+        text=self.client.ask('aW1hZ2U=','Analyse mon jeu')
+        self.assertIn('salon Fortnite',text);self.assertIn('pas ton gameplay',text)
     def test_refuse_remote(self):
         Handler.mode='remote'
         with self.assertRaisesRegex(RuntimeError,'distant'):self.client.verify()
