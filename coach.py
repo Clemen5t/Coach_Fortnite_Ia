@@ -12,10 +12,15 @@ import mss
 import numpy as np
 import sounddevice as sd
 from PIL import Image, ImageTk
-from local_ai import LocalAI, usable, AdviceGate
+from local_ai import LocalAI, usable, AdviceGate, needs_vision
 
 VOICE_NAME='fr_FR-siwis-medium'
-WHISPER_MODEL='base'
+WHISPER_MODEL='small'
+WHISPER_HINT=(
+    "Acolyte, Fortnite, créatif, salon, Battle Royale, Zéro construction, build, edit, "
+    "aim, inventaire, mini-carte, bouclier, soins, recharge, rotation, analyse mon jeu, "
+    "te souviens-tu, tu te rappelles, son pseudo, son nom, épelle-moi son pseudo."
+)
 
 COLORS={
     'bg':'#060a16','panel':'#0f182c','panel2':'#141f38','panel3':'#091225',
@@ -90,7 +95,7 @@ class VoiceEngine:
 
     def ensure_whisper(self,status=lambda x:None):
         if self.whisper is None:
-            status('Chargement de Whisper local sur CPU…')
+            status('Chargement de Whisper Small local sur CPU…')
             from faster_whisper import WhisperModel
             self.whisper=WhisperModel(WHISPER_MODEL,device='cpu',compute_type='int8',download_root=str(self.whisper_dir))
 
@@ -125,7 +130,9 @@ class VoiceEngine:
             samples=np.concatenate(chunks) if chunks else np.zeros(0,dtype=np.float32)
             if samples.size==0: raise RuntimeError('Aucun échantillon reçu du microphone sélectionné.')
             status('Transcription locale…')
-            segments,_=self.whisper.transcribe(samples,language='fr',beam_size=1,best_of=1,vad_filter=True,condition_on_previous_text=False,temperature=0)
+            segments,_=self.whisper.transcribe(
+                samples,language='fr',beam_size=3,best_of=1,vad_filter=True,
+                condition_on_previous_text=False,temperature=0,initial_prompt=WHISPER_HINT)
             return ' '.join(s.text.strip() for s in segments if s.text.strip()).strip()
 
     def speak(self,text,status=lambda x:None):
@@ -224,7 +231,7 @@ class Coach:
         titlebox=tk.Frame(header,bg=COLORS['bg']); titlebox.pack(side='left',fill='x',expand=True,padx=14)
         tk.Label(titlebox,text='ACOLYTE FORTNITE',bg=COLORS['bg'],fg=COLORS['text'],font=('Segoe UI Black',27,'bold')).pack(anchor='w')
         tk.Label(titlebox,text='Ton coéquipier IA local • créé par Clemen4t',bg=COLORS['bg'],fg=COLORS['cyan'],font=('Segoe UI',11,'bold')).pack(anchor='w',pady=(1,3))
-        tk.Label(titlebox,text='Comprend le salon, le créatif, les parties, les menus et le spectateur • 100% local',bg=COLORS['bg'],fg=COLORS['muted'],font=('Segoe UI',9)).pack(anchor='w')
+        tk.Label(titlebox,text='Conversation naturelle par défaut • vision uniquement sur demande • 100% local',bg=COLORS['bg'],fg=COLORS['muted'],font=('Segoe UI',9)).pack(anchor='w')
 
         badges=tk.Frame(header,bg=COLORS['bg']); badges.pack(side='right',anchor='ne')
         tk.Label(badges,text=' v'+VERSION+' ',bg=COLORS['purple'],fg=COLORS['text'],font=('Segoe UI',9,'bold'),padx=8,pady=5).pack(side='right',padx=(6,0))
@@ -232,7 +239,7 @@ class Coach:
         tk.Frame(parent,bg=COLORS['cyan'],height=2).pack(fill='x',padx=22,pady=(0,14))
 
     def build_voice_card(self,parent):
-        body=self.card(parent,'ACOLYTE VOCAL','F8 → parle → Acolyte reconnaît le contexte de l’écran puis te répond.',COLORS['purple'])
+        body=self.card(parent,'ACOLYTE VOCAL','F8 → parle naturellement. Acolyte regarde l’écran seulement si ta demande le nécessite.',COLORS['purple'])
         self.mic_choice=tk.StringVar(value=str(self.saved_settings.get('microphone','')))
         self.mic_devices={}; self.mic_label=tk.StringVar(value='Micro : détection…'); self.mic_detail=tk.StringVar(value='')
         tk.Label(body,text='MICROPHONE',bg=COLORS['panel'],fg=COLORS['muted'],font=('Segoe UI',8,'bold')).pack(anchor='w')
@@ -264,7 +271,7 @@ class Coach:
         tk.Label(legend,text='SATURATION',bg=COLORS['panel'],fg=COLORS['warning'],font=('Segoe UI',7,'bold')).pack(side='right')
 
     def build_response_card(self,parent):
-        body=self.card(parent,'RÉPONSE DU COACH','Le contexte reconnu et le dernier conseil restent visibles ici.',COLORS['cyan'])
+        body=self.card(parent,'RÉPONSE DU COACH','Indique clairement si la réponse vient de la conversation ou d’une analyse visuelle.',COLORS['cyan'])
         self.status=tk.StringVar(value='Mode vocal prêt.'); self.metric=tk.StringVar(value='Aucune analyse en cours.')
         self.advice=tk.StringVar(value='Appuie sur F8 puis parle.'); self.scene_state=tk.StringVar(value='EN ATTENTE')
         info=tk.Frame(body,bg=COLORS['panel']); info.pack(fill='x',pady=(0,8))
@@ -311,13 +318,13 @@ class Coach:
         ttk.Button(row,text='Aperçu écran',command=self.preview,style='Ghost.TButton').pack(side='left')
 
     def build_context_card(self,parent):
-        body=self.card(parent,'MODE CONTEXTUEL','Acolyte adapte sa réponse à ce qu’il voit réellement.',COLORS['cyan'])
-        self.context_big=tk.StringVar(value='EN ATTENTE D’UNE ANALYSE')
-        self.context_observation=tk.StringVar(value='Il peut reconnaître : salon • créatif • partie • menu • spectateur.')
+        body=self.card(parent,'MODE CONTEXTUEL','Conversation par défaut. La vision s’active seulement quand elle est utile.',COLORS['cyan'])
+        self.context_big=tk.StringVar(value='CONVERSATION')
+        self.context_observation=tk.StringVar(value='Aucune capture tant que tu ne demandes pas d’analyser ou regarder l’écran.')
         self.context_label=tk.Label(body,textvariable=self.context_big,bg=COLORS['panel3'],fg=COLORS['cyan'],font=('Segoe UI',12,'bold'),padx=12,pady=10,anchor='w')
         self.context_label.pack(fill='x')
         tk.Label(body,textvariable=self.context_observation,bg=COLORS['panel'],fg=COLORS['muted'],font=('Segoe UI',9),wraplength=380,justify='left').pack(anchor='w',pady=(8,8))
-        tk.Label(body,text='Exemples : « analyse mon jeu » • « je fais quoi ? » • « tu vois quel mode ? »',bg=COLORS['panel'],fg=COLORS['text'],font=('Segoe UI',8,'italic'),wraplength=380,justify='left').pack(anchor='w')
+        tk.Label(body,text='Vision : « analyse mon jeu » • « regarde mon écran » • « je suis dans quel mode ? »',bg=COLORS['panel'],fg=COLORS['text'],font=('Segoe UI',8,'italic'),wraplength=380,justify='left').pack(anchor='w')
 
     def build_system_card(self,parent):
         body=self.card(parent,'SYSTÈME','Mises à jour et connexion au dépôt.',COLORS['purple'],pady=(0,0))
@@ -412,12 +419,17 @@ class Coach:
             try:
                 q=self.voice.record_question(lambda s:self.emit(sid,'voice_status',s),lambda rms,peak,bands:self.emit(sid,'audio_level',rms,peak,bands),device=mic)
                 if not q:self.emit(sid,'voice_error','Aucune phrase détectée. Vérifie le spectre et le micro choisi.'); return
-                self.emit(sid,'question',q); self.emit(sid,'voice_status','👁 Reconnaissance du contexte et analyse…')
-                ai=LocalAI(self.voice_stop); ai.verify(); image=self.capture_for_ai((960,540),76)
+                self.emit(sid,'question',q)
                 hist='\n'.join(f'Joueur: {x}\nAcolyte: {y}' for x,y in self.history[-4:])
+                ai=LocalAI(self.voice_stop); ai.verify(); image=None
+                if needs_vision(q):
+                    self.emit(sid,'voice_status','👁 Analyse de l’écran…')
+                    image=self.capture_for_ai((960,540),76)
+                else:
+                    self.emit(sid,'voice_status','💬 Acolyte réfléchit…')
                 started=time.monotonic(); a=ai.ask(image,q,hist,timeout=45); elapsed=time.monotonic()-started
-                self.history.append((q,a)); self.history=self.history[-6:]
-                self.emit(sid,'answer',q,a,elapsed,ai.last_scene,ai.last_observation)
+                self.history.append((q,a)); self.history=self.history[-8:]
+                self.emit(sid,'answer',q,a,elapsed,ai.last_scene,ai.last_observation,ai.used_vision)
                 self.voice.speak(a,lambda s:self.emit(sid,'voice_status',s)); self.emit(sid,'voice_ready')
             except Exception as e:self.emit(sid,'voice_error',str(e))
         threading.Thread(target=work,daemon=True).start()
@@ -501,6 +513,11 @@ class Coach:
         if observation:self.context_observation.set(observation)
         else:self.context_observation.set('Contexte reconnu à partir de la capture actuelle.')
 
+    def set_conversation_context(self,observation='Conversation sans vision.'):
+        self.scene_state.set('CONVERSATION'); self.scene_badge.configure(bg=COLORS['purple'],fg=COLORS['text'])
+        self.context_big.set('CONVERSATION'); self.context_label.configure(fg=COLORS['purple2'])
+        self.context_observation.set(observation or 'Conversation sans vision.')
+
     def log_line(self,prefix,text,tag):
         self.log.insert('end','\n'+prefix+' ',tag); self.log.insert('end',text+'\n'); self.log.see('end')
 
@@ -518,9 +535,15 @@ class Coach:
                     self.voice_busy=False; self.talk_button.state(['!disabled']); self.voice_state.set('Erreur : '+data[0]); self.status.set('Erreur du mode vocal.')
                 elif kind=='question':self.log_line('🎙 TOI >',data[0],'you')
                 elif kind=='answer':
-                    q,a,elapsed,scene,observation=data
-                    self.advice.set(a); self.metric.set(f'Réponse vision : {elapsed*1000:.0f} ms'); self.status.set('Analyse contextuelle terminée.')
-                    self.update_scene(scene,observation); self.log_line('🤖 ACOLYTE >',a,'ai')
+                    q,a,elapsed,scene,observation,used_vision=data
+                    self.advice.set(a)
+                    if used_vision:
+                        self.metric.set(f'Vision : {elapsed*1000:.0f} ms'); self.status.set('Analyse visuelle terminée.')
+                        self.update_scene(scene,observation)
+                    else:
+                        self.metric.set(f'Conversation : {elapsed*1000:.0f} ms'); self.status.set('Réponse conversationnelle.')
+                        self.set_conversation_context(observation)
+                    self.log_line('🤖 ACOLYTE >',a,'ai')
                 elif kind=='status':self.status.set(data[0])
                 elif kind=='finished':self.start_button.state(['!disabled']); self.status.set('Analyse auto terminée.')
                 elif kind=='result':
