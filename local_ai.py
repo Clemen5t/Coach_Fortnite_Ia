@@ -27,15 +27,21 @@ Le bloc HISTORIQUE RÉEL est ta seule source concernant les messages précédent
 N'invente jamais une ancienne question, un souvenir, un nom, un classement ou un fait récent.
 Ne prétends jamais avoir une activité, une pensée ou une action en arrière-plan.
 
-RÉSOLUTION DES RÉFÉRENCES : quand le joueur dit « il », « lui », « son », « sa »,
-« ce joueur », « ce pseudo » ou « ce nom », rattache ces mots à la personne ou entité
-la plus récemment mentionnée explicitement dans l'historique. Ne transforme jamais
-« son pseudo » en « ton pseudo ». Si la référence est ambiguë, demande brièvement qui il vise.
+RÉSOLUTION DES RÉFÉRENCES : si le prompt contient « ENTITÉ COURANTE RÉSOLUE », cette
+entité est prioritaire pour comprendre les pronoms du MESSAGE ACTUEL. « il », « elle »,
+« lui », « son », « sa », « ses », « ce joueur », « cette personne », « ce pseudo » et
+« ce nom » doivent alors être compris comme parlant de cette entité, sauf contradiction
+explicite dans la phrase. Ne transforme jamais « son pseudo » en « ton pseudo ».
+Réponds DIRECTEMENT à la question sur cette entité. Ne réponds jamais par une simple
+phrase générique comme « Ok, compris », « je suis prêt à discuter » ou « dis-moi ce que
+tu veux » lorsqu'une vraie question a été posée.
 
-ACTUALITÉ : tu n'as aucun accès Internet ni classement en direct. Pour une question qui
-exige une donnée actuelle ou récente (meilleur joueur actuel, classement, dernier résultat,
-qui domine en ce moment, etc.), dis clairement que tu ne peux pas confirmer l'information
-en temps réel. N'invente pas un nom pour remplir le vide.
+FAITS : tu n'as aucun accès Internet ni classement en direct. Pour une information qui
+exige des données actuelles ou récentes (meilleur joueur actuel, classement, dernier
+résultat, équipe actuelle si incertaine, etc.), dis que tu ne peux pas la confirmer sans
+source récente. Pour un fait stable (origine, nationalité, vrai nom, ancien parcours),
+réponds seulement si tu le connais avec assez de confiance ; sinon dis simplement que tu
+n'es pas sûr sans source fiable. N'invente jamais un détail pour remplir le vide.
 
 Style : français naturel, oral, direct. En général 1 à 4 phrases courtes. Pas de JSON."""
 
@@ -214,7 +220,6 @@ def _smalltalk_answer(question):
 
 
 def _current_facts_guard(question):
-    """Évite que le modèle invente des classements ou faits nécessitant des données en direct."""
     q = _clean(question)
     ranking = any(p in q for p in ('meilleur joueur','meilleure joueuse','numero 1','top 1','qui domine',
                                    'meilleur du monde','classement actuel','classement mondial'))
@@ -226,26 +231,48 @@ def _current_facts_guard(question):
 
 
 _ENTITY_STOP = {
-    'Acolyte','Fortnite','Battle','Royale','Creative','Créatif','Salon','Oui','Non','Je','Tu','Il','Elle',
-    'En','Et','Mais','Le','La','Les','Un','Une','Ce','Cette','C','Ça','Ca','Qu','Quel','Quelle','Ton','Son'
+    'Acolyte','Fortnite','Battle','Royale','Creative','Créatif','Salon','Oui','Non','Salut','Bonjour',
+    'Je','Tu','Il','Elle','En','Et','Mais','Le','La','Les','Un','Une','Ce','Cette','C','Ça','Ca',
+    'Qu','Quel','Quelle','Ton','Son','Sa','Ses','Lui','Moi','Nous','Vous','Ils','Elles','Ok'
 }
 
 
 def _recent_entity(history):
-    """Extrait prudemment un nom/pseudo récemment cité pour les suivis du type « son pseudo »."""
+    """Extrait prudemment le nom/pseudo le plus récemment cité."""
     lines = []
     for raw in str(history or '').splitlines():
         if ':' in raw:
             lines.append(raw.split(':', 1)[1].strip())
-    for text in reversed(lines[-8:]):
+    for text in reversed(lines[-10:]):
         quoted = re.findall(r'[«\"“]([A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,24})[»\"”]', text)
         if quoted:
             return quoted[-1]
         tokens = re.findall(r'\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ0-9_\-]{2,23}\b', text)
         for token in reversed(tokens):
-            if token not in _ENTITY_STOP:
-                return token
+            if token in _ENTITY_STOP:
+                continue
+            parts=token.split('-')
+            if len(parts) >= 3 and all(len(part) == 1 and part.isalnum() for part in parts):
+                token=''.join(parts).title()
+            return token
     return ''
+
+
+def _reference_entity(question, history):
+    """Résout les suivis comme « Il vient d'où ? » vers la dernière entité explicite."""
+    q = _clean(question)
+    if not q:
+        return ''
+    if q.startswith(('il faut ','il faudrait ','il y a ','il existe ','il semble ','il me faut ')):
+        return ''
+    words = set(q.split())
+    explicit = any(p in q for p in (
+        'ce joueur','cette joueuse','cette personne','ce gars','ce mec','ce pseudo','ce nom',
+        'son pseudo','son nom','sa nationalite','son pays','son equipe','ses resultats'))
+    pronoun = bool(words.intersection({'il','elle','lui','son','sa','ses'}))
+    if not (explicit or pronoun):
+        return ''
+    return _recent_entity(history)
 
 
 def _direct_reference_answer(question, history):
@@ -253,12 +280,21 @@ def _direct_reference_answer(question, history):
     spelling = any(stem in q for stem in ('epelle','epele','epeler','lettre par lettre'))
     reference = any(p in q for p in ('son pseudo','son nom','ce pseudo','ce nom','le pseudo','le nom'))
     if spelling and reference:
-        entity = _recent_entity(history)
+        entity = _reference_entity(question, history) or _recent_entity(history)
         if not entity:
             return "Je ne sais pas avec certitude quel nom tu veux que j’épelle."
-        spelled = '-'.join(list(entity.upper()))
-        return f'{entity} s’épelle {spelled}.'
+        return f"{entity} s’épelle {'-'.join(entity.upper())}."
     return None
+
+
+def _looks_like_nonanswer(text):
+    q = _clean(text)
+    patterns = (
+        'ok compris','d accord compris','je suis pret a discuter','je suis pret a parler',
+        'dis moi ce que tu veux','qu est ce que tu veux savoir','je suis tout oui',
+        'on peut en discuter','vas y je t ecoute','je t ecoute'
+    )
+    return any(p in q for p in patterns)
 
 
 class AdviceGate:
@@ -326,23 +362,39 @@ class LocalAI:
         text,self.last_category,self.last_evidence=parse_advice(result.get('response',''))
         return text
 
+    def _chat_generate(self, prompt, timeout, temperature=.08):
+        result=self.request('/api/generate', {
+            'model':MODEL,'stream':False,'keep_alive':'5m','system':CONVERSATION_PROMPT,'prompt':prompt,
+            'options':{'num_ctx':3072,'num_predict':220,'temperature':temperature}}, timeout=timeout)
+        if not result.get('done'): raise RuntimeError('Réponse Ollama incomplète.')
+        text=' '.join(str(result.get('response','')).strip().split())
+        return text[:700] if text else "Je n'ai pas réussi à répondre."
+
     def chat(self, question, history='', timeout=30):
         self.used_vision=False; self.last_scene='unknown'; self.last_scene_confidence='low'
         self.last_observation='Conversation sans vision.'
         for direct in (_direct_memory_answer(question,history), _direct_reference_answer(question,history),
                        _smalltalk_answer(question), _current_facts_guard(question)):
             if direct is not None: return direct
+
         prompt='MESSAGE ACTUEL DU JOUEUR : '+question.strip()
-        prompt += ('\nHISTORIQUE RÉEL DE CETTE SESSION :\n'+history[-3000:]) if history.strip() else '\nHISTORIQUE RÉEL : aucun message précédent.'
-        entity=_recent_entity(history)
-        if entity and any(p in _clean(question).split() for p in ('il','lui','son','sa')):
-            prompt += '\nRÉFÉRENCE RÉCENTE POSSIBLE : '+entity+' (utilise-la seulement si le pronom la désigne clairement).'
-        result=self.request('/api/generate', {
-            'model':MODEL,'stream':False,'keep_alive':'5m','system':CONVERSATION_PROMPT,'prompt':prompt,
-            'options':{'num_ctx':3072,'num_predict':220,'temperature':0.10}}, timeout=timeout)
-        if not result.get('done'): raise RuntimeError('Réponse Ollama incomplète.')
-        text=' '.join(str(result.get('response','')).strip().split())
-        return text[:700] if text else "Je n'ai pas réussi à répondre."
+        prompt += ('\nHISTORIQUE RÉEL DE CETTE SESSION :\n'+history[-3400:]) if history.strip() else '\nHISTORIQUE RÉEL : aucun message précédent.'
+        entity=_reference_entity(question,history)
+        if entity:
+            prompt += (
+                '\nENTITÉ COURANTE RÉSOLUE : '+entity+
+                '\nINTERPRÉTATION OBLIGATOIRE : les pronoms et possessifs pertinents du MESSAGE ACTUEL '
+                'désignent '+entity+'. Réponds à la question AU SUJET DE '+entity+'. '
+                'Si tu ne connais pas le fait demandé avec confiance, dis-le clairement au lieu de changer de sujet.'
+            )
+
+        text=self._chat_generate(prompt, timeout, temperature=.08)
+        if entity and _looks_like_nonanswer(text):
+            retry=(prompt+'\nTA RÉPONSE PRÉCÉDENTE N’A PAS RÉPONDU À LA QUESTION. '
+                   'Réponds maintenant directement au sujet de '+entity+'. '
+                   'Si tu ne sais pas, dis « Je ne suis pas sûr sans source fiable. »')
+            text=self._chat_generate(retry, timeout, temperature=0)
+        return text
 
     def classify_scene(self, image, timeout=20):
         self.used_vision=True
