@@ -14,7 +14,7 @@ import uuid
 import zipfile
 
 APP_ID = 'coach-fortnite-local'
-FILES = {'coach.py','local_ai.py','updater.py','requirements.txt','Lancer.bat',
+FILES = {'coach.py','local_ai.py','pc_optimizer.py','updater.py','requirements.txt','Lancer.bat',
          'Installer-modele.bat','LIRE-MOI.txt','README.md','VERSION',
          'update-manifest.json','test_local_ai.py','test_updater.py','.gitignore'}
 REQUIRED = {'coach.py','local_ai.py','updater.py','requirements.txt','VERSION','update-manifest.json','Lancer.bat'}
