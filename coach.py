@@ -1,6 +1,12 @@
 import base64, ctypes, io, os, queue, subprocess, sys, tempfile, threading, time, wave
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+try:
+    import customtkinter as ctk
+    import psutil
+except ImportError:
+    ctk=None
+    psutil=None
 from pathlib import Path
 import updater
 try:
@@ -159,6 +165,421 @@ class VoiceEngine:
                 except OSError:pass
 
 
+
+class ScoreRing(tk.Canvas):
+    def __init__(self,parent,size=154,bg=COLORS['panel']):
+        super().__init__(parent,width=size,height=size,bg=bg,highlightthickness=0,bd=0)
+        self.size=size;self.score=0;self._draw()
+    def set_score(self,score):
+        self.score=max(0,min(100,int(score)));self._draw()
+    def _draw(self):
+        self.delete('all');pad=13;s=self.size
+        self.create_arc(pad,pad,s-pad,s-pad,start=90,extent=-359,style='arc',width=12,outline='#263758')
+        color=COLORS['success'] if self.score>=85 else COLORS['cyan'] if self.score>=70 else COLORS['warning'] if self.score>=55 else COLORS['danger']
+        self.create_arc(pad,pad,s-pad,s-pad,start=90,extent=-3.59*self.score,style='arc',width=12,outline=color)
+        self.create_text(s/2,s/2-8,text=str(self.score),fill=COLORS['text'],font=('Segoe UI',29,'bold'))
+        self.create_text(s/2,s/2+23,text='/ 100',fill=COLORS['muted'],font=('Segoe UI',10,'bold'))
+
+class PCPremiumUI:
+    NAV=[
+        ('dashboard','⌂','Tableau de bord'),('performance','⚡','Performances'),('network','↔','Réseau'),
+        ('gpu','◈','Carte graphique'),('privacy','◉','Confidentialité'),('startup','↗','Démarrage'),
+        ('games','🎮','Jeux'),('checkup','✓','Check-up'),('bios','◆','BIOS / RAM'),
+        ('apps','▦','Logiciels'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
+    def __init__(self,parent,app_dir):
+        self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
+        self.option_vars={k:tk.BooleanVar(value=(k in ('game','captures','balanced'))) for k in pc_optimizer.OPTIONS}
+        self.nav_buttons={};self.reco_widgets=[];self._last_net=None
+        ctk.set_appearance_mode('dark')
+        self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
+        self.root.pack(fill='both',expand=True)
+        self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=292)
+        self._build_sidebar();self._build_topbar();self._build_main();self._build_summary()
+        self.show('dashboard')
+        self.parent.after(350,self.scan_full)
+        self.parent.after(1000,self._tick_live)
+
+    def _build_sidebar(self):
+        side=ctk.CTkFrame(self.root,width=218,fg_color='#0B1426',corner_radius=0)
+        side.grid(row=0,column=0,rowspan=2,sticky='nsew');side.grid_propagate(False)
+        brand=ctk.CTkFrame(side,fg_color='transparent');brand.pack(fill='x',padx=16,pady=(18,12))
+        ctk.CTkLabel(brand,text='ACOLYTE',text_color=COLORS['text'],font=ctk.CTkFont(size=24,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(brand,text='PERFORMANCE',text_color=COLORS['cyan'],font=ctk.CTkFont(size=14,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(brand,text='Analyse • Optimise • Mesure',text_color=COLORS['muted'],font=ctk.CTkFont(size=10)).pack(anchor='w',pady=(3,8))
+        ctk.CTkFrame(side,height=2,fg_color=COLORS['cyan']).pack(fill='x',padx=16,pady=(0,10))
+        for key,icon,label in self.NAV:
+            b=ctk.CTkButton(side,text=f'{icon}  {label}',anchor='w',height=38,corner_radius=10,
+                fg_color='transparent',hover_color=COLORS['panel2'],text_color=COLORS['text'],
+                font=ctk.CTkFont(size=12,weight='bold'),command=lambda k=key:self.show(k))
+            b.pack(fill='x',padx=10,pady=2);self.nav_buttons[key]=b
+        self.admin_badge=ctk.CTkLabel(side,text='● ADMIN : ...',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold'))
+        self.admin_badge.pack(side='bottom',anchor='w',padx=16,pady=14)
+
+    def _build_topbar(self):
+        top=ctk.CTkFrame(self.root,fg_color='transparent')
+        top.grid(row=0,column=1,columnspan=2,sticky='ew',padx=18,pady=(14,10));top.grid_columnconfigure(0,weight=1)
+        title=ctk.CTkFrame(top,fg_color='transparent');title.grid(row=0,column=0,sticky='w')
+        ctk.CTkLabel(title,text='OPTIMISATION PC',text_color=COLORS['text'],font=ctk.CTkFont(size=25,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(title,text='Optimisation mesurée et restaurable pour ton PC gaming',text_color=COLORS['muted'],font=ctk.CTkFont(size=11)).pack(anchor='w')
+        actions=ctk.CTkFrame(top,fg_color='transparent');actions.grid(row=0,column=1,sticky='e')
+        self.scan_btn=ctk.CTkButton(actions,text='✦  SCAN COMPLET',command=self.scan_full,width=130,height=38,corner_radius=11,fg_color=COLORS['cyan2'])
+        self.scan_btn.pack(side='left',padx=4)
+        self.optimize_btn=ctk.CTkButton(actions,text='⚡  OPTIMISER',command=self.optimize_smart,width=122,height=38,corner_radius=11,fg_color=COLORS['purple'])
+        self.optimize_btn.pack(side='left',padx=4)
+        self.bench_btn=ctk.CTkButton(actions,text='◫  BENCHMARK',command=self.benchmark,width=120,height=38,corner_radius=11,fg_color='#1675E0')
+        self.bench_btn.pack(side='left',padx=4)
+        self.restore_btn=ctk.CTkButton(actions,text='↶  RESTAURER',command=self.restore,width=110,height=38,corner_radius=11,fg_color=COLORS['danger'])
+        self.restore_btn.pack(side='left',padx=4)
+
+    def _build_main(self):
+        main=ctk.CTkFrame(self.root,fg_color='transparent')
+        main.grid(row=1,column=1,sticky='nsew',padx=(18,10),pady=(0,16))
+        main.grid_rowconfigure(2,weight=1);main.grid_columnconfigure(0,weight=1)
+        kpis=ctk.CTkFrame(main,fg_color='transparent');kpis.grid(row=0,column=0,sticky='ew',pady=(0,9))
+        for i in range(4):kpis.grid_columnconfigure(i,weight=1,uniform='kpi')
+        self.kpis={}
+        for i,(key,title,accent) in enumerate([
+            ('cpu','CPU',COLORS['cyan']),('gpu','GPU',COLORS['purple2']),('ram','RAM',COLORS['success']),('net','RÉSEAU',COLORS['gold'])]):
+            box=ctk.CTkFrame(kpis,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#203354')
+            box.grid(row=0,column=i,sticky='ew',padx=(0 if i==0 else 5,0 if i==3 else 5))
+            ctk.CTkLabel(box,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=13,pady=(10,1))
+            value=ctk.CTkLabel(box,text='—',text_color=COLORS['text'],font=ctk.CTkFont(size=18,weight='bold'))
+            value.pack(anchor='w',padx=13)
+            sub=ctk.CTkLabel(box,text='Analyse en attente',text_color=accent,font=ctk.CTkFont(size=9))
+            sub.pack(anchor='w',padx=13,pady=(1,10));self.kpis[key]=(value,sub)
+
+        self.section_header=ctk.CTkFrame(main,fg_color='transparent');self.section_header.grid(row=1,column=0,sticky='ew',pady=(3,8))
+        self.section_title=ctk.CTkLabel(self.section_header,text='',text_color=COLORS['text'],font=ctk.CTkFont(size=20,weight='bold'))
+        self.section_title.pack(side='left')
+        self.section_badge=ctk.CTkLabel(self.section_header,text='LOCAL',fg_color='#173354',corner_radius=999,text_color=COLORS['cyan'],font=ctk.CTkFont(size=9,weight='bold'),padx=9,pady=3)
+        self.section_badge.pack(side='left',padx=10)
+
+        self.content=ctk.CTkScrollableFrame(main,fg_color='#0A1324',corner_radius=15,border_width=1,border_color='#1E3151')
+        self.content.grid(row=2,column=0,sticky='nsew')
+
+        self.tabs=ctk.CTkTabview(main,height=175,fg_color=COLORS['panel'],segmented_button_fg_color='#111E34',
+            segmented_button_selected_color=COLORS['purple'],corner_radius=15)
+        self.tabs.grid(row=3,column=0,sticky='ew',pady=(9,0))
+        self.summary_text=self._text_tab('Résumé')
+        self.details_text=self._text_tab('Détails')
+        self.log_text=self._text_tab('Journal')
+        self.log('Acolyte Performance prêt.')
+
+    def _text_tab(self,name):
+        tab=self.tabs.add(name)
+        box=ctk.CTkTextbox(tab,height=112,fg_color='#07101F',text_color='#DCEBFF',corner_radius=10,font=('Consolas',10))
+        box.pack(fill='both',expand=True,padx=5,pady=5);return box
+
+    def _build_summary(self):
+        side=ctk.CTkFrame(self.root,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#203354')
+        side.grid(row=1,column=2,sticky='nsew',padx=(0,18),pady=(0,16))
+        ctk.CTkLabel(side,text='SANTÉ DU PC',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=16,pady=(16,5))
+        self.ring=ScoreRing(side,150,COLORS['panel']);self.ring.pack(pady=(0,2))
+        self.score_state=ctk.CTkLabel(side,text='Scan en cours…',text_color=COLORS['cyan'],font=ctk.CTkFont(size=13,weight='bold'))
+        self.score_state.pack()
+        ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=14)
+        ctk.CTkLabel(side,text='RECOMMANDATIONS',text_color=COLORS['text'],font=ctk.CTkFont(size=12,weight='bold')).pack(anchor='w',padx=16)
+        self.reco_frame=ctk.CTkFrame(side,fg_color='transparent');self.reco_frame.pack(fill='x',padx=12,pady=8)
+        self._render_recos([])
+        ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=10)
+        self.quick_state=ctk.CTkTextbox(side,height=145,fg_color='#08111F',corner_radius=10,text_color=COLORS['muted'],font=('Segoe UI',9))
+        self.quick_state.pack(fill='x',padx=14,pady=(0,14));self._set_quick_state('Analyse du système en attente.')
+
+    def _set_quick_state(self,text):
+        self.quick_state.configure(state='normal');self.quick_state.delete('1.0','end');self.quick_state.insert('end',text);self.quick_state.configure(state='disabled')
+
+    def _clear(self):
+        for child in self.content.winfo_children():child.destroy()
+
+    def show(self,key):
+        if self.busy:return
+        self.current=key
+        for k,b in self.nav_buttons.items():
+            b.configure(fg_color=COLORS['purple'] if k==key else 'transparent')
+        label=next((x[2] for x in self.NAV if x[0]==key),key)
+        self.section_title.configure(text=label.upper())
+        self._clear()
+        getattr(self,'_page_'+key,self._page_generic)()
+
+    def _hero(self,title,desc,accent=None):
+        accent=accent or COLORS['cyan']
+        box=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#203354')
+        box.pack(fill='x',padx=10,pady=(10,8))
+        bar=ctk.CTkFrame(box,width=5,fg_color=accent,corner_radius=4);bar.pack(side='left',fill='y',padx=(0,12),pady=12)
+        txt=ctk.CTkFrame(box,fg_color='transparent');txt.pack(side='left',fill='x',expand=True,pady=12)
+        ctk.CTkLabel(txt,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=17,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(txt,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=10),wraplength=760,justify='left').pack(anchor='w',pady=(3,0))
+
+    def _action_card(self,title,desc,status='Disponible',impact='Mesuré',risk='Faible',option=None,command=None,button='OUVRIR'):
+        card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        card.pack(fill='x',padx=10,pady=5)
+        left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=14,pady=12)
+        ctk.CTkLabel(left,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=14,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(left,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=650,justify='left').pack(anchor='w',pady=(3,7))
+        tags=ctk.CTkFrame(left,fg_color='transparent');tags.pack(anchor='w')
+        for text,color in [(status,'#15476A'),('Impact '+impact,'#594317'),('Risque '+risk,'#174B3A')]:
+            ctk.CTkLabel(tags,text=text,fg_color=color,corner_radius=999,text_color='white',font=ctk.CTkFont(size=8,weight='bold'),padx=8,pady=2).pack(side='left',padx=(0,5))
+        right=ctk.CTkFrame(card,fg_color='transparent');right.pack(side='right',padx=12,pady=12)
+        if option:
+            sw=ctk.CTkSwitch(right,text='Sélectionner',variable=self.option_vars[option],progress_color=COLORS['cyan2'],font=ctk.CTkFont(size=9))
+            sw.pack(pady=(0,7))
+        if command:
+            ctk.CTkButton(right,text=button,command=command,width=110,height=32,corner_radius=9,fg_color=COLORS['purple']).pack()
+
+    def _button_row(self,items):
+        row=ctk.CTkFrame(self.content,fg_color='transparent');row.pack(fill='x',padx=10,pady=6)
+        for text,cmd,color in items:
+            ctk.CTkButton(row,text=text,command=cmd,fg_color=color,height=34,corner_radius=9).pack(side='left',padx=(0,6))
+
+    def _page_dashboard(self):
+        self._hero('Centre de contrôle','Une vue unique du matériel, de Windows, du réseau et des recommandations prioritaires.',COLORS['cyan'])
+        self._button_row([('✦ SCAN COMPLET',self.scan_full,COLORS['cyan2']),('◫ BENCHMARK RÉSEAU',self.benchmark,'#1675E0'),('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple'])])
+        if self.last_scan:
+            for rec in self.last_scan.get('recommendations',[])[:5]:
+                self._action_card(rec['title'],rec['detail'],'Recommandé','Variable','Faible',
+                    option=rec.get('option'),command=(lambda sec=rec.get('section'):self.show(sec)) if rec.get('section') else None,button='VOIR')
+
+    def _page_performance(self):
+        self._hero('Performances gaming','Réglages sûrs et restaurables. Aucun overclocking, undervolt ou désactivation de sécurité automatique.',COLORS['purple2'])
+        self._action_card('Mode Jeu Windows','Priorise mieux les ressources pour les jeux et réduit certaines activités de fond.','Recommandé','Faible','Faible','game')
+        self._action_card('Captures Xbox Game Bar','Désactive les captures en arrière-plan si tu ne les utilises pas.','Optionnel','Moyen','Faible','captures')
+        self._action_card('Plan d’alimentation Équilibré','Base stable recommandée pour Ryzen X3D ; les boosts CPU restent gérés par le firmware.','Recommandé','Moyen','Faible','balanced')
+        self._button_row([('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple']),('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2']),('Alimentation',lambda:self._open('power'),COLORS['panel2'])])
+
+    def _page_network(self):
+        self._hero('Réseau & latence','Ping ICMP vers la box et Internet, diagnostic de la carte, RSS/RSC, DNS et économie d’énergie.',COLORS['cyan'])
+        self._action_card('Benchmark réseau','Mesure passerelle, Cloudflare et Google avec ping, jitter et réponses perdues.','Mesurable','Élevé','Nul',command=self.benchmark,button='TESTER')
+        self._action_card('Diagnostic carte réseau','Lit la liaison, la passerelle, les DNS, RSS/RSC et les options d’alimentation sans rien modifier.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('network'),button='ANALYSER')
+
+    def _page_gpu(self):
+        self._hero('Carte graphique','Détection du GPU principal, version du pilote et accès aux outils officiels.',COLORS['purple2'])
+        self._action_card('Pilotes GPU','Affiche les pilotes installés. La présence d’une mise à jour est vérifiée chez le fabricant.','Lecture seule','Élevé','Nul',command=lambda:self._diagnostic('gpu'),button='LIRE')
+        self._button_row([('AMD Adrenalin / pilotes',lambda:self._open('amd'),COLORS['purple']),('Graphiques Windows',lambda:self._open('graphics'),COLORS['panel2']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2'])])
+
+    def _page_privacy(self):
+        self._hero('Confidentialité Windows','Réduit certains contenus promotionnels sans désactiver Defender, le pare-feu, Windows Update ou les protections système.',COLORS['cyan'])
+        self._action_card('Identifiant publicitaire','Désactive l’identifiant publicitaire du compte courant.','Restaurable','Faible','Faible','ads')
+        self._action_card('Suggestions promotionnelles','Réduit certaines suggestions Windows pour le compte courant.','Restaurable','Faible','Faible','suggestions')
+        self._button_row([('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple']),('Paramètres confidentialité',lambda:self._open('privacy'),COLORS['panel2'])])
+
+    def _page_startup(self):
+        self._hero('Démarrage','Inventorie les entrées Run du compte actuel. Retire uniquement ce que tu reconnais.',COLORS['gold'])
+        self._button_row([('LISTER LES ENTRÉES',self.load_startup,COLORS['cyan2']),('Paramètres Démarrage',lambda:self._open('startup'),COLORS['panel2'])])
+
+    def _page_games(self):
+        self._hero('Jeux détectés','Détection locale via Epic Games et chemins connus. Aucun fichier de jeu n’est modifié.',COLORS['purple'])
+        self._button_row([('DÉTECTER LES JEUX',self.load_games,COLORS['purple'])])
+
+    def _page_checkup(self):
+        self._hero('Check-up système','Espace disque et fichiers temporaires. Le nettoyage ne touche qu’au TEMP utilisateur ancien de plus de 7 jours.',COLORS['success'])
+        self._action_card('Analyse entretien','Compte les temporaires et vérifie l’espace libre des disques.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('checkup'),button='ANALYSER')
+        self._action_card('Nettoyage prudent','Supprime uniquement les fichiers temporaires utilisateur anciens et non verrouillés.','Action locale','Faible','Faible',command=self.cleanup_temp,button='NETTOYER')
+
+    def _page_bios(self):
+        self._hero('BIOS / RAM','Diagnostic uniquement : vitesse RAM configurée, profil mémoire à vérifier, UEFI et virtualisation.',COLORS['warning'])
+        self._action_card('EXPO / XMP & mémoire','Compare la vitesse configurée avec la vitesse annoncée par les barrettes. Aucun changement BIOS automatique.','Important','Élevé','Nul',command=lambda:self._diagnostic('bios'),button='ANALYSER')
+        self._button_row([('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])])
+
+    def _page_apps(self):
+        self._hero('Logiciels','Liste fermée d’applications Windows facultatives. La désinstallation est séparée de la restauration des tweaks.',COLORS['gold'])
+        self._button_row([('LISTER LES APPS PROPOSÉES',self.load_apps,COLORS['cyan2']),('Toutes les applications',lambda:self._open('apps'),COLORS['panel2']),('Microsoft Store',lambda:self._open('store'),COLORS['panel2'])])
+
+    def _page_updates(self):
+        self._hero('Mises à jour','Accès direct aux sources officielles. Acolyte ne prétend pas qu’un pilote est à jour sans vérification.',COLORS['cyan'])
+        self._button_row([('Windows Update',lambda:self._open('updates'),COLORS['cyan2']),('AMD',lambda:self._open('amd'),COLORS['purple']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2']),('Intel',lambda:self._open('intel'),COLORS['panel2'])])
+
+    def _page_usb(self):
+        self._hero('USB & périphériques','Diagnostic de périphériques et test optionnel sans suspension USB sur secteur. Aucun gain de latence n’est garanti.',COLORS['cyan'])
+        self._action_card('Suspension sélective USB','À tester uniquement en cas de déconnexions de périphériques.','Dépannage','Faible','Faible','usb')
+        self._button_row([('LISTER LES PÉRIPHÉRIQUES',lambda:self._diagnostic('usb'),COLORS['cyan2']),('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple'])])
+
+    def _page_generic(self):self._hero('Section','Contenu en cours de chargement.')
+
+    def _open(self,name):
+        try:pc_optimizer.open_panel(name)
+        except Exception as exc:self._error('Ouverture',exc)
+
+    def _diagnostic(self,category):
+        self._run('Diagnostic '+category,lambda:pc_optimizer.diagnostics(category),lambda x:self._show_result('Diagnostic '+category,x))
+
+    def scan_full(self):
+        self._run('Scan complet',pc_optimizer.full_scan,self._scan_done)
+
+    def _scan_done(self,data):
+        self.last_scan=data;system=data.get('system',{});network=data.get('network',{})
+        self.admin_badge.configure(text='● ADMIN : '+('OUI' if system.get('admin') else 'NON'),text_color=COLORS['success'] if system.get('admin') else COLORS['warning'])
+        self.kpis['cpu'][0].configure(text=self._short_cpu(system.get('cpu','—')))
+        self.kpis['gpu'][0].configure(text=self._short_gpu(system.get('gpu','—')))
+        self.kpis['ram'][0].configure(text=f"{system.get('ram','—')} Go")
+        self.kpis['net'][0].configure(text=str(network.get('link') or system.get('link') or '—'))
+        self.kpis['cpu'][1].configure(text='Charge live en cours')
+        self.kpis['gpu'][1].configure(text=str(system.get('gpu','—'))[:38])
+        self.kpis['ram'][1].configure(text='Utilisation live en cours')
+        self.kpis['net'][1].configure(text=str(network.get('name') or system.get('nic') or 'Interface active'))
+        score=int(data.get('score',0));self.ring.set_score(score)
+        state='EXCELLENT' if score>=90 else 'BON ÉTAT' if score>=75 else 'À OPTIMISER' if score>=60 else 'ATTENTION'
+        self.score_state.configure(text=state,text_color=COLORS['success'] if score>=85 else COLORS['cyan'] if score>=70 else COLORS['warning'])
+        self._render_recos(data.get('recommendations',[]))
+        opts=set(pc_optimizer.recommended_options(data))
+        for key in ('game','captures','balanced'):self.option_vars[key].set(key in opts)
+        games=data.get('games') or [];startup=data.get('startup_count')
+        self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nGPU : {system.get('gpu','?')}\nRéseau : {network.get('link','?')}")
+        self._set_text(self.summary_text,self._scan_summary(data))
+        self._set_text(self.details_text,json.dumps(data,ensure_ascii=False,indent=2))
+        if self.current=='dashboard':self.show('dashboard')
+
+    def _scan_summary(self,data):
+        lines=[f"Score configuration : {data.get('score',0)}/100",'']
+        for x in data.get('positives',[]):lines.append('✓ '+x)
+        for x in data.get('recommendations',[]):lines.append('! '+x.get('title','')+' — '+x.get('detail',''))
+        return '\n'.join(lines)
+
+    def _render_recos(self,items):
+        for w in self.reco_frame.winfo_children():w.destroy()
+        if not items:
+            ctk.CTkLabel(self.reco_frame,text='Lance un scan complet pour obtenir des recommandations.',text_color=COLORS['muted'],wraplength=245,justify='left',font=ctk.CTkFont(size=9)).pack(anchor='w',pady=3)
+            return
+        for rec in items[:4]:
+            color=COLORS['warning'] if rec.get('level')=='important' else COLORS['cyan']
+            row=ctk.CTkFrame(self.reco_frame,fg_color='#0A172A',corner_radius=9)
+            row.pack(fill='x',pady=3)
+            ctk.CTkLabel(row,text='●',text_color=color,font=ctk.CTkFont(size=11)).pack(side='left',padx=(8,5),pady=8)
+            ctk.CTkLabel(row,text=rec.get('title','À vérifier'),text_color=COLORS['text'],font=ctk.CTkFont(size=9,weight='bold'),wraplength=200,justify='left').pack(side='left',fill='x',expand=True,pady=8)
+
+    def benchmark(self):
+        self._run('Benchmark réseau',pc_optimizer.benchmark,self._benchmark_done)
+
+    def _benchmark_done(self,rows):
+        text=pc_optimizer.format_benchmark(rows);previous=self.last_benchmark;self.last_benchmark=rows
+        summary=text
+        if previous:
+            def avg_public(data):
+                vals=[r.get('avg') for r in data if r.get('status')=='ok' and r.get('host') in ('1.1.1.1','8.8.8.8') and r.get('avg') is not None]
+                return sum(vals)/len(vals) if vals else None
+            a=avg_public(previous);b=avg_public(rows)
+            if a is not None and b is not None:summary+=f"\n\nComparaison avec le test précédent : {a:.1f} → {b:.1f} ms ({b-a:+.1f} ms)."
+        self._show_result('Benchmark réseau',summary)
+
+    def apply_selected(self):
+        opts=[k for k,v in self.option_vars.items() if v.get()]
+        if not opts:return messagebox.showinfo('Acolyte Performance','Sélectionne au moins un réglage.')
+        details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
+        if not messagebox.askyesno('Appliquer la sélection',details+'\n\nUne sauvegarde durable est créée avant modification. Continuer ?'):return
+        self._run('Application des réglages',lambda:pc_optimizer.apply_selected(opts,self.app_dir),lambda x:self._after_mutation('Optimisation',x))
+
+    def optimize_smart(self):
+        if not self.last_scan:
+            return self._run('Scan avant optimisation',pc_optimizer.full_scan,self._smart_after_scan)
+        self._smart_after_scan(self.last_scan)
+
+    def _smart_after_scan(self,scan):
+        self.last_scan=scan;opts=pc_optimizer.recommended_options(scan)
+        if not opts:return messagebox.showinfo('Optimisation intelligente','Les réglages sûrs suivis par Acolyte sont déjà dans l’état recommandé.')
+        details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
+        if not messagebox.askyesno('Optimisation intelligente','Acolyte recommande :\n\n'+details+'\n\nAucun tweak réseau agressif, BIOS, overclock ou sécurité ne sera appliqué. Continuer ?'):return
+        self._run('Optimisation intelligente',lambda:pc_optimizer.apply_selected(opts,self.app_dir),lambda x:self._after_mutation('Optimisation intelligente',x))
+
+    def _after_mutation(self,title,result):
+        self._show_result(title,result)
+        self.parent.after(250,self.scan_full)
+
+    def restore(self):
+        if not messagebox.askyesno('Restaurer','Rétablir les réglages suivis par Acolyte depuis la sauvegarde initiale ?'):return
+        self._run('Restauration',lambda:pc_optimizer.restore(self.app_dir),lambda x:self._after_mutation('Restauration',x))
+
+    def cleanup_temp(self):
+        if not messagebox.askyesno('Nettoyage prudent','Supprimer uniquement les fichiers TEMP utilisateur vieux de plus de 7 jours ?'):return
+        self._run('Nettoyage TEMP',lambda:pc_optimizer.cleanup_temp(7),lambda x:self._show_result('Check-up',x))
+
+    def load_startup(self):
+        self._run('Démarrage',pc_optimizer.startup_items,self._render_startup)
+    def _render_startup(self,rows):
+        self._clear();self._hero('Applications au démarrage',f'{len(rows)} entrée(s) Run détectée(s). Retire uniquement ce que tu reconnais.',COLORS['gold'])
+        for row in rows[:24]:
+            self._action_card(row['name'],str(row.get('command',''))[:170],'Installé','Variable','À vérifier',
+                command=lambda n=row['name']:self._disable_startup(n),button='RETIRER')
+        self._set_text(self.details_text,json.dumps(rows,ensure_ascii=False,indent=2))
+    def _disable_startup(self,name):
+        if messagebox.askyesno('Démarrage','Retirer '+name+' du démarrage automatique ?\nLe programme restera installé et Restaurer pourra réactiver cette entrée.'):
+            self._run('Démarrage '+name,lambda:pc_optimizer.disable_startup(self.app_dir,name),lambda x:self._show_result('Démarrage',x))
+
+    def load_games(self):
+        self._run('Détection des jeux',pc_optimizer.detected_games,self._render_games)
+    def _render_games(self,rows):
+        self._clear();self._hero('Jeux détectés',f'{len(rows)} jeu(x) détecté(s) localement.',COLORS['purple'])
+        if not rows:self._action_card('Aucun jeu détecté','Ajoute les autres launchers plus tard ou vérifie l’installation Epic.','Information','Nul','Nul')
+        for row in rows:self._action_card(row.get('name','Jeu'),row.get('launcher','')+' • '+row.get('path',''),'Détecté','Profil futur','Nul')
+        self._set_text(self.details_text,json.dumps(rows,ensure_ascii=False,indent=2))
+
+    def load_apps(self):
+        self._run('Applications facultatives',pc_optimizer.removable_apps,self._render_apps)
+    def _render_apps(self,rows):
+        self._clear();self._hero('Applications Windows facultatives',f'{len(rows)} application(s) reconnue(s). La désinstallation ne fait pas partie de Restaurer.',COLORS['gold'])
+        for row in rows:
+            self._action_card(row['name'],row['package'],'Installée','Faible','Irréversible par Acolyte',
+                command=lambda p=row['package'],n=row['name']:self._remove_app(p,n),button='DÉSINSTALLER')
+        self._set_text(self.details_text,json.dumps(rows,ensure_ascii=False,indent=2))
+    def _remove_app(self,package,name):
+        if messagebox.askyesno('Désinstaller',f'Désinstaller {name} pour ton compte ?\nLes données locales peuvent être supprimées et Restaurer ne réinstalle pas l’application.'):
+            self._run('Désinstallation '+name,lambda:pc_optimizer.remove_app(self.app_dir,package),lambda x:self._show_result('Logiciels',x))
+
+    def _show_result(self,title,result):
+        text=result if isinstance(result,str) else json.dumps(result,ensure_ascii=False,indent=2)
+        self._set_text(self.summary_text,title+'\n\n'+text)
+        self._set_text(self.details_text,text)
+        self.tabs.set('Résumé')
+
+    def _run(self,label,func,callback=None):
+        if self.busy:return
+        self.busy=True;self._set_busy(True);self.log('[START] '+label)
+        def work():
+            try:
+                value=func();self.parent.after(0,lambda:self._finish(label,value,callback))
+            except Exception as exc:self.parent.after(0,lambda exc=exc:self._error(label,exc))
+        threading.Thread(target=work,daemon=True).start()
+
+    def _finish(self,label,value,callback):
+        self.busy=False;self._set_busy(False);self.log('[OK] '+label)
+        if callback:callback(value)
+        elif value is not None:self._show_result(label,value)
+
+    def _error(self,label,exc):
+        self.busy=False;self._set_busy(False);self.log('[ERREUR] '+label+' : '+str(exc))
+        messagebox.showerror('Acolyte Performance',label+' :\n'+str(exc))
+
+    def _set_busy(self,on):
+        state='disabled' if on else 'normal'
+        for b in (self.scan_btn,self.optimize_btn,self.bench_btn,self.restore_btn):b.configure(state=state)
+        self.section_badge.configure(text='ANALYSE…' if on else 'LOCAL',text_color=COLORS['warning'] if on else COLORS['cyan'])
+
+    def log(self,text):
+        self.log_text.configure(state='normal');self.log_text.insert('end',f"[{time.strftime('%H:%M:%S')}] {text}\n");self.log_text.see('end')
+
+    def _set_text(self,box,text):
+        box.configure(state='normal');box.delete('1.0','end');box.insert('end',str(text));box.see('1.0')
+
+    def _short_cpu(self,name):
+        n=str(name).replace('AMD ','').replace(' Processor','')
+        return n[:28]
+    def _short_gpu(self,name):
+        return str(name).replace('AMD ','').replace('NVIDIA ','')[:28]
+
+    def _tick_live(self):
+        try:
+            if psutil is not None:
+                cpu=psutil.cpu_percent(interval=None);mem=psutil.virtual_memory()
+                self.kpis['cpu'][1].configure(text=f'Charge {cpu:.0f}%')
+                self.kpis['ram'][1].configure(text=f'Utilisée {mem.used/1024**3:.1f} Go • {mem.percent:.0f}%')
+                io=psutil.net_io_counters();now=time.time()
+                if self._last_net:
+                    t,r,s=self._last_net;dt=max(.1,now-t)
+                    down=(io.bytes_recv-r)*8/dt/1e6;up=(io.bytes_sent-s)*8/dt/1e6
+                    self.kpis['net'][1].configure(text=f'↓ {down:.2f} Mb/s  ↑ {up:.2f} Mb/s')
+                self._last_net=(now,io.bytes_recv,io.bytes_sent)
+        except Exception:pass
+        try:self.parent.after(1000,self._tick_live)
+        except Exception:pass
+
 class Coach:
     def __init__(self,root):
         self.root=root; self.events=queue.Queue(); self.stop_event=threading.Event(); self.voice_stop=threading.Event()
@@ -204,160 +625,13 @@ class Coach:
         (self.pc_section if name=='pc' else self.coach_section).pack(fill='both',expand=True)
 
     def build_pc_section(self,parent):
-        wrap=tk.Frame(parent,bg=COLORS['bg']);wrap.pack(fill='both',expand=True,padx=22,pady=(0,12))
         if pc_optimizer is None:
-            tk.Label(wrap,text='Module PC absent. Relance Acolyte après sa mise à jour.',bg=COLORS['bg'],fg=COLORS['text']).pack()
+            tk.Label(parent,text='Module PC absent. Relance Acolyte après la mise à jour.',bg=COLORS['bg'],fg=COLORS['text']).pack(pady=30)
             return
-        self.pc_busy=False;self.pc_rows=[];self.pc_category='windows'
-        self.pc_options={key:tk.BooleanVar(value=key=='game') for key in pc_optimizer.OPTIONS}
-        toolbar=tk.Frame(wrap,bg=COLORS['bg']);toolbar.pack(fill='x',pady=(0,8))
-        for label,command,style in [('Analyser le PC',self.pc_analyze,'Ghost.TButton'),('Benchmark réseau',self.pc_benchmark,'Cyan.TButton'),('Appliquer la sélection',self.pc_optimize,'Primary.TButton'),('Restaurer',self.pc_restore,'Danger.TButton')]:
-            ttk.Button(toolbar,text=label,command=command,style=style).pack(side='left',padx=(0,6))
-        grid=tk.Frame(wrap,bg=COLORS['bg']);grid.pack(fill='x')
-        categories=[('dashboard','TABLEAU DE BORD','État du PC et matériel'),('performance','PERFORMANCES','Mode Jeu, captures, alimentation'),('network','RÉSEAU','Ping, carte réseau et DNS'),('gpu','CARTE GRAPHIQUE','Pilotes et réglages guidés'),('privacy','CONFIDENTIALITÉ','Publicité et suggestions Windows'),('startup','DÉMARRAGE','Applications du compte'),('games','JEUX','Détection locale et Fortnite'),('checkup','CHECK-UP','Temporaires, stockage et entretien'),('bios','BIOS / RAM','EXPO/XMP, UEFI et virtualisation'),('apps','LOGICIELS','Désinstallation au choix'),('updates','MISES À JOUR','Windows et pilotes officiels'),('usb','USB','Diagnostic et dépannage')]
-        for i,(key,title,subtitle) in enumerate(categories):
-            grid.grid_columnconfigure(i%4,weight=1,uniform='pc')
-            tk.Button(grid,text=title+'\n'+subtitle,command=lambda k=key:self.pc_select_category(k),bg=COLORS['panel2'],fg=COLORS['text'],activebackground=COLORS['purple'],activeforeground='white',relief='flat',font=('Segoe UI',10),padx=8,pady=12,wraplength=225).grid(row=i//4,column=i%4,sticky='nsew',padx=3,pady=3)
-        self.pc_detail=tk.Frame(wrap,bg=COLORS['panel']);self.pc_detail.pack(fill='x',pady=8)
-        self.pc_table=ttk.Treeview(wrap,columns=('name','detail'),show='headings',height=4,selectmode='browse')
-        self.pc_table.heading('name',text='Application');self.pc_table.heading('detail',text='Détail')
-        self.pc_table.column('name',width=240);self.pc_table.column('detail',width=650)
-        self.pc_status=tk.StringVar(value='Choisis une catégorie. Aucun réglage n’est appliqué automatiquement.')
-        tk.Label(wrap,textvariable=self.pc_status,bg=COLORS['bg'],fg=COLORS['cyan'],anchor='w',wraplength=1000).pack(fill='x',pady=5)
-        frame=tk.Frame(wrap,bg=COLORS['bg']);frame.pack(fill='both',expand=True)
-        self.pc_output=tk.Text(frame,height=6,wrap='word',bg=COLORS['log'],fg='#dbeafe',relief='flat',font=('Consolas',10),padx=12,pady=10)
-        scroll=ttk.Scrollbar(frame,command=self.pc_output.yview);scroll.pack(side='right',fill='y')
-        self.pc_output.configure(yscrollcommand=scroll.set);self.pc_output.pack(fill='both',expand=True)
-        self.pc_select_category('dashboard')
-        self.pc_write('Sélectionne les actions voulues puis clique sur Appliquer la sélection.\nLa sauvegarde initiale est conservée jusqu’à la restauration.\nLes désinstallations sont séparées et ne sont pas annulées par Restaurer.\nRAM/BIOS et pilotes : diagnostic et outils officiels, pas de modification automatique.')
-
-    def pc_select_category(self,category):
-        if self.pc_busy:return
-        self.pc_category=category;self.pc_rows=[]
-        self.pc_table.pack_forget()
-        for child in self.pc_table.get_children():self.pc_table.delete(child)
-        for child in self.pc_detail.winfo_children():child.destroy()
-        descriptions={
-            'dashboard':'Vue d’ensemble locale du matériel, de Windows et du réseau actif. Aucun changement n’est appliqué.',
-            'performance':'Réglages gaming simples et restaurables : Mode Jeu, captures Game Bar et plan Équilibré. Aucun overclocking automatique.',
-            'network':'Mesure ICMP réelle vers la box et Internet, plus lecture de RSS/RSC, DNS, passerelle et économie d’énergie. Aucun tweak réseau forcé sans mesure.',
-            'gpu':'Lis la version des pilotes GPU et ouvre les outils officiels. Aucun overclocking, undervolt ou profil Adrenalin forcé.',
-            'privacy':'Réglages de confidentialité du compte Windows : identifiant publicitaire et suggestions promotionnelles. Sauvegardés avant modification.',
-            'startup':'Entrées du registre Run du compte actuel. Une entrée présente peut déjà être désactivée dans Windows. Les autres démarrages se gèrent dans les paramètres Windows.',
-            'games':'Détection locale des jeux installés depuis les manifests Epic Games et chemins connus. Aucun fichier de jeu n’est modifié.',
-            'checkup':'Analyse les temporaires utilisateur et l’espace disque. Le nettoyage ne touche qu’aux fichiers temporaires anciens de plus de 7 jours.',
-            'bios':'Diagnostic en lecture seule : RAM configurée, vitesse annoncée, UEFI et virtualisation. EXPO/XMP reste une action BIOS manuelle.',
-            'apps':'Retire uniquement les applications que tu n’utilises pas. Les données locales peuvent être supprimées. Réinstallation via Microsoft Store.',
-            'updates':'Ouvre Windows Update ou le fabricant pour vérifier et installer les mises à jour. Acolyte ne déclare pas un pilote à jour sans vérification.',
-            'usb':'La suspension USB reste activée par défaut. Désactive-la uniquement pour comparer en cas de déconnexions sur secteur ; aucun gain de latence n’est garanti.'}
-        tk.Label(self.pc_detail,text=descriptions[category],bg=COLORS['panel'],fg=COLORS['text'],wraplength=980,justify='left',anchor='w',padx=10,pady=8).pack(fill='x')
-        choices={'performance':['game','captures','balanced'],'privacy':['ads','suggestions'],'usb':['usb']}.get(category,[])
-        for key in choices:
-            tk.Checkbutton(self.pc_detail,text=pc_optimizer.OPTIONS[key][0],variable=self.pc_options[key],bg=COLORS['panel'],fg=COLORS['text'],selectcolor=COLORS['panel3'],activebackground=COLORS['panel'],activeforeground=COLORS['text']).pack(anchor='w',padx=8)
-        actions={
-            'dashboard':[('Analyser le PC',self.pc_analyze),('Benchmark réseau',self.pc_benchmark)],
-            'performance':[('Ouvrir le mode Jeu',lambda:self.pc_open('game')),('Alimentation Windows',lambda:self.pc_open('power'))],
-            'network':[('Benchmark réseau',self.pc_benchmark),('Diagnostic carte réseau',lambda:self.pc_diagnostic('network'))],
-            'gpu':[('Lire les pilotes GPU',lambda:self.pc_diagnostic('gpu')),('Support AMD',lambda:self.pc_open('amd')),('Support NVIDIA',lambda:self.pc_open('nvidia')),('Graphiques Windows',lambda:self.pc_open('graphics'))],
-            'privacy':[('Paramètres confidentialité',lambda:self.pc_open('privacy'))],
-            'startup':[('Lister les entrées',lambda:self.pc_inventory('startup')),('Retirer du démarrage',lambda:self.pc_item_action('startup')),('Démarrage Windows',lambda:self.pc_open('startup'))],
-            'games':[('Détecter les jeux',lambda:self.pc_diagnostic('games'))],
-            'checkup':[('Analyser',lambda:self.pc_diagnostic('checkup')),('Nettoyer temporaires > 7 jours',lambda:self.pc_cleanup_temp())],
-            'bios':[('Analyser BIOS / RAM',lambda:self.pc_diagnostic('bios')),('Support MSI B650 Gaming Plus WiFi',lambda:self.pc_open('board'))],
-            'apps':[('Lister les applications proposées',lambda:self.pc_inventory('apps')),('Désinstaller la sélection',lambda:self.pc_item_action('apps')),('Toutes les applications',lambda:self.pc_open('apps')),('Microsoft Store',lambda:self.pc_open('store'))],
-            'updates':[('Windows Update',lambda:self.pc_open('updates')),('AMD / chipset',lambda:self.pc_open('amd')),('NVIDIA',lambda:self.pc_open('nvidia')),('Intel',lambda:self.pc_open('intel'))],
-            'usb':[('Lister les périphériques USB',lambda:self.pc_diagnostic('usb'))]}
-        bar=tk.Frame(self.pc_detail,bg=COLORS['panel']);bar.pack(fill='x',padx=8,pady=7)
-        for label,command in actions[category]:ttk.Button(bar,text=label,command=command,style='Ghost.TButton').pack(side='left',padx=(0,5))
-        if category in ('apps','startup'):self.pc_table.pack(fill='x',after=self.pc_detail,pady=(0,5))
-
-    def pc_open(self,name):
-        if self.pc_busy:return
-        try:pc_optimizer.open_panel(name)
-        except Exception as exc:self.pc_error(str(exc))
-
-    def pc_inventory(self,category):
-        def work():
-            rows=pc_optimizer.removable_apps() if category=='apps' else pc_optimizer.startup_items()
-            return {'inventory':category,'rows':rows}
-        self.pc_job('Lecture des applications',work)
-
-    def pc_item_action(self,category):
-        if self.pc_busy:return
-        selection=self.pc_table.selection()
-        if not selection:messagebox.showinfo('Sélection','Sélectionne une application dans la liste.');return
-        item=self.pc_rows[int(selection[0])]
-        if category=='apps':
-            question='Désinstaller '+item['name']+' pour ton compte ?\nSes données locales peuvent être supprimées.\nRestaurer ne réinstalle pas cette application.'
-            action=lambda:pc_optimizer.remove_app(APP_DIR,item['package'])
-        else:
-            question='Retirer '+item['name']+' du démarrage automatique ?\nNe retire pas une protection de sécurité ou un utilitaire matériel nécessaire.\nLe programme restera installé ; Restaurer réactivera cette entrée.'
-            action=lambda:pc_optimizer.disable_startup(APP_DIR,item['name'])
-        if messagebox.askyesno('Confirmer l’action',question):self.pc_job('Modification',action)
-
-    def pc_diagnostic(self,category):
-        self.pc_job('Diagnostic '+category,lambda:pc_optimizer.diagnostics(category))
-
-    def pc_cleanup_temp(self):
-        if self.pc_busy:return
-        if not messagebox.askyesno('Nettoyage temporaire','Supprimer uniquement les fichiers du dossier TEMP utilisateur vieux de plus de 7 jours ?\n\nLes fichiers récents, verrouillés et situés hors de TEMP seront conservés.'):return
-        self.pc_job('Nettoyage des temporaires',lambda:pc_optimizer.cleanup_temp(7))
-
-    def pc_write(self,text):
-        self.pc_output.delete('1.0','end');self.pc_output.insert('end',text);self.pc_output.see('end')
-
-    def pc_job(self,label,func):
-        if getattr(self,'pc_busy',False) or getattr(self,'updating',False):return
-        self.pc_busy=True
-        self.pc_status.set(label+'…')
-        def work():
-            try:
-                result=func()
-                self.root.after(0,lambda result=result:self.pc_done(result))
-            except Exception as e:self.root.after(0,lambda e=e:self.pc_error(str(e)))
-        threading.Thread(target=work,daemon=True).start()
-
-    def pc_done(self,result):
-        self.pc_busy=False;self.pc_status.set('Terminé.')
-        if isinstance(result,dict) and 'inventory' in result:
-            self.pc_rows=result['rows']
-            for child in self.pc_table.get_children():self.pc_table.delete(child)
-            for i,row in enumerate(self.pc_rows):self.pc_table.insert('', 'end',iid=str(i),values=(row['name'],row.get('command',row.get('package',''))))
-            self.pc_write(str(len(self.pc_rows))+' entrée(s). Sélectionne une ligne pour agir.\nLa liste des logiciels proposés est volontairement limitée aux applications facultatives reconnues. Pour le reste, utilise Toutes les applications.' if result['inventory']=='apps' else str(len(self.pc_rows))+' entrée(s) Run du compte courant. Les commandes affichées ne sont jamais exécutées par Acolyte.')
-        elif isinstance(result,str):self.pc_write(result)
-        else:self.pc_write(json.dumps(result,ensure_ascii=False,indent=2))
-
-    def pc_error(self,error):
-        self.pc_busy=False;self.pc_status.set('Erreur : '+error);messagebox.showerror('Optimisation PC',error)
-
-    def pc_analyze(self):
-        def work():
-            d=pc_optimizer.analyze()
-            return '\n'.join([
-                'CPU : '+str(d.get('cpu','?')),'GPU : '+str(d.get('gpu','?')),
-                'RAM : '+str(d.get('ram','?'))+' Go','Carte mère : '+str(d.get('board','?')),
-                'BIOS : '+str(d.get('bios','?')),'Windows : '+str(d.get('windows','?'))+' build '+str(d.get('build','?')),
-                'Réseau : '+str(d.get('nic','?'))+' — '+str(d.get('nic_desc','?'))+' — '+str(d.get('link','?')),
-                'Administrateur : '+('oui' if d.get('admin') else 'non')])
-        self.pc_job('Analyse du PC',work)
-
-    def pc_benchmark(self):
-        self.pc_job('Benchmark réseau',lambda:pc_optimizer.format_benchmark(pc_optimizer.benchmark()))
-
-    def pc_optimize(self):
-        if self.pc_busy:return
-        options=[key for key,var in self.pc_options.items() if var.get()]
-        if not options:messagebox.showinfo('Sélection','Coche au moins un réglage dans Performances, Confidentialité ou USB.');return
-        details='\n'.join('• '+pc_optimizer.OPTIONS[key][0] for key in options)
-        if not messagebox.askyesno('Appliquer la sélection',details+'\n\nSauvegarde avant modification, puis vérification.\nRestaurer rétablit les valeurs sauvegardées.\nAppliquer ces changements ?'):return
-        self.pc_job('Application des réglages Windows',lambda:pc_optimizer.optimize(APP_DIR,options))
-
-    def pc_format_bench(self,rows):return pc_optimizer.format_benchmark(rows)
-
-    def pc_restore(self):
-        if self.pc_busy:return
-        if not messagebox.askyesno('Restaurer','Rétablir tous les réglages suivis depuis la sauvegarde initiale ?\nCela peut remplacer des modifications manuelles ultérieures de ces mêmes réglages.\nLes désinstallations et les réglages faits dans les outils externes sont exclus.'):return
-        self.pc_job('Restauration',lambda:pc_optimizer.restore(APP_DIR))
+        if ctk is None or psutil is None:
+            tk.Label(parent,text='Interface Performance incomplète : lance Lancer.bat pour installer customtkinter et psutil.',bg=COLORS['bg'],fg=COLORS['warning']).pack(pady=30)
+            return
+        self.pc_ui=PCPremiumUI(parent,APP_DIR)
 
     def build_theme(self):
         style=ttk.Style()
