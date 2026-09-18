@@ -518,3 +518,167 @@ def open_panel(name):
     if target.startswith('https:'):webbrowser.open(target)
     elif os.name == 'nt':os.startfile(target)
     else:raise RuntimeError('Ce panneau nécessite Windows.')
+
+
+# === ACOLYTE PERFORMANCE PREMIUM ===
+# Façade structurée pour la nouvelle interface. Les fonctions historiques restent
+# disponibles afin de conserver la compatibilité avec les versions précédentes.
+
+_legacy_analyze = analyze
+
+def analyze():
+    info = _legacy_analyze()
+    raw = str(info.get('gpu',''))
+    gpus = [x.strip() for x in raw.split(',') if x.strip()]
+    usable = [x for x in gpus if 'Parsec Virtual Display Adapter' not in x and 'Microsoft Basic' not in x]
+    def rank(name):
+        n=name.lower()
+        if '7900 xt' in n:return 100
+        if 'radeon rx' in n:return 90
+        if 'geforce rtx' in n:return 90
+        if 'geforce gtx' in n:return 80
+        if 'arc a' in n:return 75
+        if 'radeon(tm) graphics' in n:return 10
+        return 40
+    preferred=max(usable,key=rank) if usable else (gpus[0] if gpus else 'Inconnu')
+    info['gpu_all']=usable or gpus
+    info['gpu']=preferred
+    return info
+
+def network_snapshot():
+    return _strict_json("""$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select -First 1
+if($null -eq $nic){[ordered]@{status='offline'}}else{
+ $ip=Get-NetIPConfiguration -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
+ $rss=Get-NetAdapterRss -Name $nic.Name -ErrorAction SilentlyContinue
+ $rsc=Get-NetAdapterRsc -Name $nic.Name -ErrorAction SilentlyContinue
+ $pm=Get-NetAdapterPowerManagement -Name $nic.Name -ErrorAction SilentlyContinue
+ [ordered]@{
+  status='online';name=$nic.Name;description=$nic.InterfaceDescription;link=$nic.LinkSpeed
+  ipv4=(@($ip.IPv4Address.IPAddress)-join ', ');gateway=(@($ip.IPv4DefaultGateway.NextHop)-join ', ')
+  dns=(@($ip.DNSServer.ServerAddresses)-join ', ')
+  rss=$rss.Enabled;rsc_ipv4=$rsc.IPv4Enabled;rsc_ipv6=$rsc.IPv6Enabled
+  allow_power_off=$pm.AllowComputerToTurnOffDevice
+ }}""")
+
+def bios_snapshot():
+    data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)
+$fw='Inconnu'
+try{$fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType}catch{}
+$virt=Get-CimInstance Win32_Processor|Select -First 1 VirtualizationFirmwareEnabled,VMMonitorModeExtensions,SecondLevelAddressTranslationExtensions
+[ordered]@{firmware=$fw;ram=$ram;virtualization=$virt}""")
+    rows=_rows(data.get('ram') if isinstance(data,dict) else None)
+    hints=[]
+    for row in rows:
+        try:
+            rated=int(row.get('Speed') or 0);configured=int(row.get('ConfiguredClockSpeed') or 0)
+            if rated and configured and rated-configured>=200:
+                hints.append(f"RAM {str(row.get('PartNumber') or '').strip()}: {configured} MT/s configurés pour {rated} MT/s annoncés. EXPO/XMP est à vérifier dans le BIOS.")
+        except (TypeError,ValueError):pass
+    data['hints']=hints
+    return data
+
+def settings_snapshot(backend=None):
+    backend=backend or WindowsSettings()
+    out={}
+    mapping={
+        'game_auto':{'kind':'registry','id':'game_auto'},
+        'game_allow':{'kind':'registry','id':'game_allow'},
+        'capture':{'kind':'registry','id':'capture'},
+        'dvr':{'kind':'registry','id':'dvr'},
+        'ads':{'kind':'registry','id':'ads'},
+        'suggestions':{'kind':'registry','id':'suggestions'},
+        'suggestions_2':{'kind':'registry','id':'suggestions_2'},
+    }
+    for key,spec in mapping.items():
+        try:out[key]=backend.read(spec)
+        except Exception as exc:out[key]={'error':str(exc)}
+    try:out['power_plan']=backend.read({'kind':'power'})
+    except Exception as exc:out['power_plan']='Erreur: '+str(exc)
+    return out
+
+def full_scan():
+    system=analyze()
+    try:network=network_snapshot()
+    except Exception as exc:network={'status':'error','error':str(exc)}
+    try:bios=bios_snapshot()
+    except Exception as exc:bios={'error':str(exc),'ram':[],'hints':[]}
+    try:maintenance=checkup()
+    except Exception as exc:maintenance={'error':str(exc),'disks':[]}
+    try:settings=settings_snapshot()
+    except Exception as exc:settings={'error':str(exc)}
+    try:games=detected_games()
+    except Exception:games=[]
+    try:startup_count=len(startup_items())
+    except Exception:startup_count=None
+    scan={'system':system,'network':network,'bios':bios,'maintenance':maintenance,
+          'settings':settings,'games':games,'startup_count':startup_count}
+    score,recommendations,positives=score_scan(scan)
+    scan['score']=score;scan['recommendations']=recommendations;scan['positives']=positives
+    return scan
+
+def _reg_is(snapshot, value):
+    return isinstance(snapshot,dict) and snapshot.get('exists') and snapshot.get('value')==value
+
+def score_scan(scan):
+    score=100
+    rec=[];ok=[]
+    bios=scan.get('bios') or {}
+    hints=bios.get('hints') if isinstance(bios,dict) else []
+    if hints:
+        score-=12
+        rec.append({'level':'important','title':'Mémoire RAM à vérifier','detail':hints[0],'section':'bios'})
+    else:ok.append('Aucune différence évidente de fréquence RAM détectée par Windows.')
+
+    net=scan.get('network') or {}
+    desc=str(net.get('description','')).lower();link=str(net.get('link','')).lower()
+    if ('2.5' in desc or '2,5' in desc) and ('1 gbps' in link or '1 gb/s' in link or '1 gbit' in link):
+        score-=6
+        rec.append({'level':'info','title':'Lien Ethernet à 1 Gbit/s','detail':'La carte réseau semble supporter 2,5 GbE mais la liaison négocie 1 Gbit/s. Cela ne signifie pas forcément plus de ping, mais limite le débit maximal.','section':'network'})
+    elif net.get('status')=='online':ok.append('Interface réseau active détectée.')
+
+    settings=scan.get('settings') or {}
+    if not _reg_is(settings.get('game_auto'),1):
+        score-=5
+        rec.append({'level':'important','title':'Mode Jeu Windows','detail':'Le Mode Jeu n’est pas confirmé actif pour ce compte.','section':'performance','option':'game'})
+    else:ok.append('Mode Jeu Windows actif.')
+
+    if _reg_is(settings.get('capture'),1) or _reg_is(settings.get('dvr'),1):
+        score-=4
+        rec.append({'level':'info','title':'Captures Game Bar','detail':'Les captures en arrière-plan sont actives. Désactive-les si tu ne les utilises pas.','section':'performance','option':'captures'})
+
+    if str(settings.get('power_plan','')).lower()!=BALANCED:
+        score-=3
+        rec.append({'level':'info','title':'Plan d’alimentation','detail':'Le plan Équilibré AMD/Windows est conseillé comme base stable pour un Ryzen X3D.','section':'performance','option':'balanced'})
+    else:ok.append('Plan d’alimentation Équilibré actif.')
+
+    maintenance=scan.get('maintenance') or {}
+    for disk in maintenance.get('disks') or []:
+        if str(disk.get('drive','')).upper().startswith('C'):
+            total=float(disk.get('total_gb') or 0);free=float(disk.get('free_gb') or 0)
+            ratio=(free/total) if total else 1
+            if ratio<0.10:
+                score-=12;rec.append({'level':'important','title':'Disque système presque plein','detail':f"Seulement {free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
+            elif ratio<0.20:
+                score-=5;rec.append({'level':'info','title':'Espace disque système','detail':f"{free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
+            else:ok.append('Espace libre du disque système correct.')
+
+    count=scan.get('startup_count')
+    if isinstance(count,int) and count>15:
+        score-=6;rec.append({'level':'info','title':'Démarrage chargé','detail':f'{count} entrées Run détectées. Vérifie celles qui sont inutiles.','section':'startup'})
+    elif isinstance(count,int) and count>8:
+        score-=3;rec.append({'level':'info','title':'Applications au démarrage','detail':f'{count} entrées Run détectées.','section':'startup'})
+
+    score=max(0,min(100,score))
+    return score,rec,ok
+
+def recommended_options(scan):
+    settings=scan.get('settings') or {}
+    options=[]
+    if not _reg_is(settings.get('game_auto'),1):options.append('game')
+    if _reg_is(settings.get('capture'),1) or _reg_is(settings.get('dvr'),1):options.append('captures')
+    if str(settings.get('power_plan','')).lower()!=BALANCED:options.append('balanced')
+    return options
+
+def apply_selected(options, root):
+    return optimize(root, options)
+
