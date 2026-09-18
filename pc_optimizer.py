@@ -954,11 +954,13 @@ def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS,d
     BENCH_DATA_DIR.mkdir(parents=True,exist_ok=True)
     stamp=time.strftime('%Y%m%d-%H%M%S')
     csv_path=BENCH_DATA_DIR/f'fortnite-{stamp}.csv'
+    target_args=['--process_id',str(process['pid'])] if process.get('pid') else ['--process_name',process_name]
     args=[
-        str(PRESENTMON_EXE),'--process_name',process_name,'--output_file',str(csv_path),
+        str(PRESENTMON_EXE),*target_args,'--output_file',str(csv_path),
         '--delay',str(delay),'--timed',str(duration),'--terminate_after_timed','--terminate_on_proc_exit',
         '--stop_existing_session','--session_name','AcolyteFortniteBenchmark',
-        '--v1_metrics','--exclude_dropped','--no_track_gpu','--no_track_input','--no_console_stats'
+        '--set_circular_buffer_size','8192',
+        '--v1_metrics','--exclude_dropped','--no_track_gpu','--no_track_input','--no_track_display','--no_console_stats'
     ]
     cpu_samples=[];ram_samples=[]
     flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
