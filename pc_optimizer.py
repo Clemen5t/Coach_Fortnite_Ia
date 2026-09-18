@@ -836,11 +836,12 @@ def benchmark_history(limit=10):
     rows=_benchmark_history_read()
     return rows[-max(1,int(limit)):]
 
-def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS):
+def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS,delay=5):
     status=presentmon_status()
     if not status['installed']:raise RuntimeError('Moteur PresentMon absent. Installe-le depuis l’écran Jeux.')
-    duration=int(duration)
+    duration=int(duration);delay=int(delay)
     if duration not in (30,60,90,120,180):raise ValueError('Durée de benchmark non autorisée.')
+    if not 0<=delay<=10:raise ValueError('Délai de benchmark invalide.')
     process=game_process_running(process_name)
     if not process['running']:raise RuntimeError('Fortnite n’est pas lancé. Ouvre le jeu et entre dans une partie avant de démarrer le benchmark.')
     if not is_admin():raise PermissionError('Pour une capture ETW fiable, relance Acolyte avec « Exécuter en tant qu’administrateur ».')
@@ -849,7 +850,7 @@ def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS):
     csv_path=BENCH_DATA_DIR/f'fortnite-{stamp}.csv'
     args=[
         str(PRESENTMON_EXE),'--process_name',process_name,'--output_file',str(csv_path),
-        '--timed',str(duration),'--terminate_after_timed','--terminate_on_proc_exit',
+        '--delay',str(delay),'--timed',str(duration),'--terminate_after_timed','--terminate_on_proc_exit',
         '--stop_existing_session','--session_name','AcolyteFortniteBenchmark',
         '--v1_metrics','--exclude_dropped','--no_track_gpu','--no_track_input','--no_console_stats'
     ]
@@ -874,7 +875,7 @@ def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS):
     result=_parse_presentmon_csv(csv_path)
     result.update({
         'timestamp':time.strftime('%Y-%m-%d %H:%M:%S'),'label':str(label)[:40],
-        'requested_seconds':duration,'process_name':process_name,'csv_path':str(csv_path),
+        'requested_seconds':duration,'delay_seconds':delay,'process_name':process_name,'csv_path':str(csv_path),
         'cpu_avg_percent':statistics.mean(cpu_samples) if cpu_samples else None,
         'cpu_max_percent':max(cpu_samples) if cpu_samples else None,
         'ram_avg_percent':statistics.mean(ram_samples) if ram_samples else None,
@@ -892,3 +893,10 @@ def compare_game_benchmarks(before,after):
     fa=float(before.get('avg_frametime_ms') or 0);fb=float(after.get('avg_frametime_ms') or 0)
     delta['avg_frametime_ms']={'before':fa,'after':fb,'delta':fb-fa,'percent':((fb-fa)/fa*100) if fa else None}
     return delta
+
+
+def open_benchmark_folder():
+    BENCH_DATA_DIR.mkdir(parents=True,exist_ok=True)
+    if os.name!='nt':raise RuntimeError('Ouverture du dossier disponible uniquement sous Windows.')
+    os.startfile(str(BENCH_DATA_DIR))
+    return str(BENCH_DATA_DIR)
