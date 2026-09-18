@@ -380,6 +380,44 @@ def remove_app(root, package):
     return APP_CANDIDATES[package]+' désinstallé pour le compte courant.\nRéinstallation via Microsoft Store ; les données locales ne sont pas sauvegardées par Acolyte.'
 
 
+def clear_windows_cache():
+    """Nettoyage prudent du cache Windows.
+    Ne purge pas la standby list et ne supprime pas le cache shaders DirectX,
+    car cela peut dégrader temporairement les performances en jeu.
+    """
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant de vider les caches Windows afin d’éviter de supprimer des fichiers utilisés par le jeu.')
+    before=checkup()
+    temp_result=cleanup_temp(1)
+
+    dns_ok=False;dns_detail=''
+    out,err,code=_run(['ipconfig.exe','/flushdns'],timeout=20)
+    dns_ok=(code==0)
+    dns_detail=(out or err or '').strip()
+
+    delivery='Non disponible'
+    try:
+        out,err,code=_ps("""$cmd=Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue
+if($null -eq $cmd){'INDISPONIBLE'}else{
+ try{Delete-DeliveryOptimizationCache -Force -ErrorAction Stop;'OK'}catch{'ERREUR: '+$_.Exception.Message}
+}""",timeout=60)
+        delivery=(out or err or 'Non disponible').strip()
+    except Exception as exc:
+        delivery='Erreur: '+str(exc)
+
+    after=checkup()
+    freed=max(0.0,float(before.get('temp_size_mb') or 0)-float(after.get('temp_size_mb') or 0))
+    return {
+        'temp_cleanup':temp_result,
+        'freed_temp_mb':round(freed,1),
+        'dns_flushed':dns_ok,
+        'dns_detail':dns_detail,
+        'delivery_optimization_cache':delivery,
+        'shader_cache':'Conservé volontairement pour éviter une recompilation des shaders et des stutters au prochain lancement.',
+        'standby_memory':'Non purgée : vider la mémoire standby n’améliore pas durablement les FPS et peut forcer Windows à recharger des données.',
+        'note':'Nettoyage prudent terminé. Les caches qui peuvent dégrader le premier lancement d’un jeu ont été conservés.'
+    }
+
 def network_diagnostics():
     data=_strict_json("""$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select -First 1
 if($null -eq $nic){[ordered]@{status='Aucune interface réseau active'}}else{
@@ -596,6 +634,26 @@ def settings_snapshot(backend=None):
     except Exception as exc:out['power_plan']='Erreur: '+str(exc)
     return out
 
+def windows_health_snapshot():
+    """État Windows utilisé par le score. Lecture seule ; les valeurs indisponibles restent neutres."""
+    try:
+        data=_strict_json("""$mp=Get-MpComputerStatus -ErrorAction SilentlyContinue
+$fw=@(Get-NetFirewallProfile -ErrorAction SilentlyContinue|Select-Object Name,Enabled)
+$pd=@(Get-PhysicalDisk -ErrorAction SilentlyContinue|Select-Object FriendlyName,HealthStatus,OperationalStatus)
+$pending=((Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'))
+[ordered]@{
+ defender_available=($null -ne $mp)
+ antivirus_enabled=if($null -ne $mp){$mp.AntivirusEnabled}else{$null}
+ realtime_enabled=if($null -ne $mp){$mp.RealTimeProtectionEnabled}else{$null}
+ signature_age_days=if($null -ne $mp){$mp.AntivirusSignatureAge}else{$null}
+ firewall=$fw
+ physical_disks=$pd
+ pending_reboot=$pending
+}""")
+        return data if isinstance(data,dict) else {}
+    except Exception as exc:
+        return {'error':str(exc)}
+
 def full_scan():
     system=analyze()
     try:network=network_snapshot()
@@ -606,70 +664,156 @@ def full_scan():
     except Exception as exc:maintenance={'error':str(exc),'disks':[]}
     try:settings=settings_snapshot()
     except Exception as exc:settings={'error':str(exc)}
+    try:health=windows_health_snapshot()
+    except Exception as exc:health={'error':str(exc)}
     try:games=detected_games()
     except Exception:games=[]
     try:startup_count=len(startup_items())
     except Exception:startup_count=None
     scan={'system':system,'network':network,'bios':bios,'maintenance':maintenance,
-          'settings':settings,'games':games,'startup_count':startup_count}
-    score,recommendations,positives=score_scan(scan)
+          'settings':settings,'health':health,'games':games,'startup_count':startup_count}
+    score,recommendations,positives,breakdown=score_scan(scan)
     scan['score']=score;scan['recommendations']=recommendations;scan['positives']=positives
+    scan['score_breakdown']=breakdown
+    scan['score_note']="Le score mesure l'état/configuration Windows, la sécurité, le stockage, le démarrage et les réglages gaming. Il ne note pas la puissance ou le prix du matériel."
     return scan
 
 def _reg_is(snapshot, value):
     return isinstance(snapshot,dict) and snapshot.get('exists') and snapshot.get('value')==value
 
 def score_scan(scan):
-    score=100
+    """Score de santé/configuration, pas un indice de puissance matérielle."""
     rec=[];ok=[]
-    bios=scan.get('bios') or {}
-    hints=bios.get('hints') if isinstance(bios,dict) else []
-    if hints:
-        score-=12
-        rec.append({'level':'important','title':'Mémoire RAM à vérifier','detail':hints[0],'section':'bios'})
-    else:ok.append('Aucune différence évidente de fréquence RAM détectée par Windows.')
+    breakdown={
+        'Sécurité Windows':25,
+        'Performances gaming':30,
+        'Stockage / entretien':20,
+        'Démarrage':10,
+        'Réseau':10,
+        'État Windows':5,
+    }
 
-    net=scan.get('network') or {}
-    desc=str(net.get('description','')).lower();link=str(net.get('link','')).lower()
-    if ('2.5' in desc or '2,5' in desc) and ('1 gbps' in link or '1 gb/s' in link or '1 gbit' in link):
-        score-=6
-        rec.append({'level':'info','title':'Lien Ethernet à 1 Gbit/s','detail':'La carte réseau semble supporter 2,5 GbE mais la liaison négocie 1 Gbit/s. Cela ne signifie pas forcément plus de ping, mais limite le débit maximal.','section':'network'})
-    elif net.get('status')=='online':ok.append('Interface réseau active détectée.')
+    # --- Sécurité Windows : 25 pts ---
+    health=scan.get('health') or {}
+    if health.get('defender_available'):
+        if health.get('antivirus_enabled') is False:
+            breakdown['Sécurité Windows']-=8
+            rec.append({'level':'important','title':'Antivirus Microsoft Defender désactivé','detail':'La protection antivirus Windows est désactivée. Acolyte ne la désactive jamais.','section':'checkup'})
+        else:ok.append('Antivirus Microsoft Defender actif.')
+        if health.get('realtime_enabled') is False:
+            breakdown['Sécurité Windows']-=9
+            rec.append({'level':'important','title':'Protection en temps réel désactivée','detail':'La protection en temps réel de Defender est désactivée.','section':'checkup'})
+        else:ok.append('Protection Defender en temps réel active.')
+        try:
+            age=int(health.get('signature_age_days'))
+            if age>7:
+                breakdown['Sécurité Windows']-=3
+                rec.append({'level':'info','title':'Signatures Defender anciennes','detail':f'Les signatures antivirus ont {age} jours. Vérifie Windows Update.','section':'updates'})
+        except (TypeError,ValueError):pass
 
+    fw=health.get('firewall') or []
+    fw=_rows(fw)
+    if fw:
+        disabled=[x for x in fw if x.get('Enabled') is False]
+        if disabled:
+            breakdown['Sécurité Windows']-=5
+            rec.append({'level':'important','title':'Pare-feu Windows partiellement désactivé','detail':'Au moins un profil du pare-feu Windows est désactivé.','section':'checkup'})
+        else:ok.append('Pare-feu Windows actif sur les profils détectés.')
+
+    # --- Performances gaming : 30 pts ---
     settings=scan.get('settings') or {}
     if not _reg_is(settings.get('game_auto'),1):
-        score-=5
+        breakdown['Performances gaming']-=8
         rec.append({'level':'important','title':'Mode Jeu Windows','detail':'Le Mode Jeu n’est pas confirmé actif pour ce compte.','section':'performance','option':'game'})
     else:ok.append('Mode Jeu Windows actif.')
 
     if _reg_is(settings.get('capture'),1) or _reg_is(settings.get('dvr'),1):
-        score-=4
+        breakdown['Performances gaming']-=3
         rec.append({'level':'info','title':'Captures Game Bar','detail':'Les captures en arrière-plan sont actives. Désactive-les si tu ne les utilises pas.','section':'performance','option':'captures'})
 
     if str(settings.get('power_plan','')).lower()!=BALANCED:
-        score-=3
+        breakdown['Performances gaming']-=4
         rec.append({'level':'info','title':'Plan d’alimentation','detail':'Le plan Équilibré AMD/Windows est conseillé comme base stable pour un Ryzen X3D.','section':'performance','option':'balanced'})
     else:ok.append('Plan d’alimentation Équilibré actif.')
 
+    bios=scan.get('bios') or {}
+    hints=bios.get('hints') if isinstance(bios,dict) else []
+    if hints:
+        breakdown['Performances gaming']-=10
+        rec.append({'level':'important','title':'Mémoire RAM à vérifier','detail':hints[0],'section':'bios'})
+    else:ok.append('Aucune différence évidente de fréquence RAM détectée par Windows.')
+
+    # --- Stockage / entretien : 20 pts ---
     maintenance=scan.get('maintenance') or {}
+    disk_health=_rows(health.get('physical_disks') or [])
+    unhealthy=[d for d in disk_health if str(d.get('HealthStatus','')).lower() not in ('healthy','sain','')]
+    if unhealthy:
+        breakdown['Stockage / entretien']-=8
+        rec.append({'level':'important','title':'Santé du stockage à vérifier','detail':'Windows signale au moins un disque avec un état différent de Healthy.','section':'checkup'})
+    elif disk_health:ok.append('État physique des disques signalé Healthy.')
+
     for disk in maintenance.get('disks') or []:
         if str(disk.get('drive','')).upper().startswith('C'):
             total=float(disk.get('total_gb') or 0);free=float(disk.get('free_gb') or 0)
             ratio=(free/total) if total else 1
             if ratio<0.10:
-                score-=12;rec.append({'level':'important','title':'Disque système presque plein','detail':f"Seulement {free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
+                breakdown['Stockage / entretien']-=10
+                rec.append({'level':'important','title':'Disque système presque plein','detail':f"Seulement {free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
             elif ratio<0.20:
-                score-=5;rec.append({'level':'info','title':'Espace disque système','detail':f"{free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
+                breakdown['Stockage / entretien']-=5
+                rec.append({'level':'info','title':'Espace disque système','detail':f"{free:.1f} Go libres sur {total:.1f} Go.",'section':'checkup'})
             else:ok.append('Espace libre du disque système correct.')
 
-    count=scan.get('startup_count')
-    if isinstance(count,int) and count>15:
-        score-=6;rec.append({'level':'info','title':'Démarrage chargé','detail':f'{count} entrées Run détectées. Vérifie celles qui sont inutiles.','section':'startup'})
-    elif isinstance(count,int) and count>8:
-        score-=3;rec.append({'level':'info','title':'Applications au démarrage','detail':f'{count} entrées Run détectées.','section':'startup'})
+    try:
+        temp_mb=float(maintenance.get('temp_size_mb') or 0)
+        if temp_mb>10240:
+            breakdown['Stockage / entretien']-=2
+            rec.append({'level':'info','title':'Cache temporaire volumineux','detail':f'{temp_mb/1024:.1f} Go de fichiers TEMP détectés.','section':'checkup'})
+        elif temp_mb>5120:
+            breakdown['Stockage / entretien']-=1
+    except (TypeError,ValueError):pass
 
-    score=max(0,min(100,score))
-    return score,rec,ok
+    # --- Démarrage : 10 pts ---
+    count=scan.get('startup_count')
+    if isinstance(count,int):
+        if count>20:
+            breakdown['Démarrage']-=7
+            rec.append({'level':'info','title':'Démarrage très chargé','detail':f'{count} entrées Run détectées. Vérifie celles qui sont inutiles.','section':'startup'})
+        elif count>15:
+            breakdown['Démarrage']-=5
+            rec.append({'level':'info','title':'Démarrage chargé','detail':f'{count} entrées Run détectées.','section':'startup'})
+        elif count>8:
+            breakdown['Démarrage']-=2
+            rec.append({'level':'info','title':'Applications au démarrage','detail':f'{count} entrées Run détectées.','section':'startup'})
+        else:ok.append('Nombre d’entrées Run raisonnable.')
+
+    # --- Réseau : 10 pts ---
+    net=scan.get('network') or {}
+    if net.get('status')!='online':
+        breakdown['Réseau']-=8
+        rec.append({'level':'important','title':'Interface réseau non confirmée','detail':'Acolyte ne détecte pas d’interface réseau physique active.','section':'network'})
+    else:
+        ok.append('Interface réseau physique active.')
+        if net.get('rss') is False:
+            breakdown['Réseau']-=2
+            rec.append({'level':'info','title':'RSS réseau désactivé','detail':'Receive Side Scaling est désactivé sur la carte active.','section':'network'})
+    desc=str(net.get('description','')).lower();link=str(net.get('link','')).lower()
+    if ('2.5' in desc or '2,5' in desc) and ('1 gbps' in link or '1 gb/s' in link or '1 gbit' in link):
+        # Information seulement : une liaison 1 Gb/s n’augmente pas automatiquement le ping.
+        rec.append({'level':'info','title':'Lien Ethernet à 1 Gbit/s','detail':'La carte semble supporter 2,5 GbE mais la liaison négocie 1 Gbit/s. Cela limite le débit maximal, pas nécessairement la latence.','section':'network'})
+
+    # --- État Windows : 5 pts ---
+    if health.get('pending_reboot') is True:
+        breakdown['État Windows']-=3
+        rec.append({'level':'info','title':'Redémarrage Windows en attente','detail':'Windows signale qu’un redémarrage est nécessaire pour finaliser une mise à jour ou modification.','section':'updates'})
+    else:ok.append('Aucun redémarrage Windows en attente détecté.')
+
+    # Clamp par catégorie puis somme.
+    max_points={'Sécurité Windows':25,'Performances gaming':30,'Stockage / entretien':20,'Démarrage':10,'Réseau':10,'État Windows':5}
+    for key,maxv in max_points.items():
+        breakdown[key]=max(0,min(maxv,int(breakdown[key])))
+    score=sum(breakdown.values())
+    return score,rec,ok,breakdown
 
 def recommended_options(scan):
     settings=scan.get('settings') or {}
