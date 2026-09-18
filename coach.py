@@ -476,7 +476,9 @@ class PCPremiumUI:
         if result.get('label')=='AVANT optimisation':self.game_phase_var.set('APRÈS optimisation')
         self._show_result('Benchmark Fortnite',self._format_game_result(result))
         self.show('games')
-        messagebox.showinfo('Benchmark terminé',f"FPS moyen : {result.get('avg_fps',0):.1f}\n1% low : {result.get('one_percent_low',0):.1f}\n0,1% low : {result.get('point_one_percent_low',0):.1f}\nFrametime moyen : {result.get('avg_frametime_ms',0):.2f} ms")
+        warnings=result.get('capture_warnings') or []
+        extra=('\n\n⚠ '+warnings[0]) if warnings else ''
+        messagebox.showinfo('Benchmark terminé',f"FPS moyen : {result.get('avg_fps',0):.1f}\n1% low : {result.get('one_percent_low',0):.1f}\n0,1% low : {result.get('point_one_percent_low',0):.1f}\nFrametime moyen : {result.get('avg_frametime_ms',0):.2f} ms"+extra)
 
     def _format_game_result(self,r):
         return (
@@ -488,7 +490,8 @@ class PCPremiumUI:
             f"P99 frametime : {r.get('p99_frametime_ms',0):.2f} ms\n"
             f"Pire frametime : {r.get('worst_frametime_ms',0):.2f} ms\n"
             f"Frames >33 ms : {r.get('stutters_33ms',0)} • >50 ms : {r.get('stutters_50ms',0)}\n"
-            f"Images analysées : {r.get('frames',0)} • moteur : {r.get('engine_version','?')}"
+            f"Images analysées : {r.get('frames',0)} • swapchains détectés : {r.get('swapchains_detected',1)} • moteur : {r.get('engine_version','?')}" +
+            (("\n\n⚠ " + "\n⚠ ".join(r.get('capture_warnings') or [])) if r.get('capture_warnings') else "")
         )
 
     def _metric_box(self,parent,title,value,unit,color):
