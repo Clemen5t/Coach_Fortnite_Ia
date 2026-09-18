@@ -33,21 +33,37 @@ $nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status 
     info['admin']=is_admin()
     return info
 
-def ping(host='1.1.1.1', count=12):
-    values=[];lost=0
-    for _ in range(count):
-        started=time.perf_counter()
-        try:
-            s=socket.create_connection((host,443),timeout=1.5);s.close()
-            values.append((time.perf_counter()-started)*1000)
-        except OSError:lost+=1
-        time.sleep(.04)
-    if not values:return {'host':host,'avg':0,'min':0,'max':0,'jitter':0,'loss':100}
-    jitter=statistics.mean(abs(b-a) for a,b in zip(values,values[1:])) if len(values)>1 else 0
-    return {'host':host,'avg':statistics.mean(values),'min':min(values),'max':max(values),'jitter':jitter,'loss':lost*100/count}
+def _gateway():
+    out,err,code=_ps("""$r=Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue|Sort-Object RouteMetric,InterfaceMetric|Select -First 1 -ExpandProperty NextHop; $r""")
+    return out.strip() if not code and out.strip() else None
+
+def ping(host='1.1.1.1', count=16):
+    script=f"""$r=Test-Connection -ComputerName '{host}' -Count {int(count)} -ErrorAction SilentlyContinue
+$vals=@($r|ForEach-Object {{$_.ResponseTime}}|Where-Object {{$_ -ne $null}})
+$sent={int(count)}
+$recv=$vals.Count
+if($recv -eq 0){{[ordered]@{{host='{host}';avg=0;min=0;max=0;jitter=0;loss=100;received=0}}}}
+else{{
+  $jit=0
+  if($recv -gt 1){{$diff=@();for($i=1;$i -lt $recv;$i++){{$diff += [math]::Abs([double]$vals[$i]-[double]$vals[$i-1])}};$jit=($diff|Measure-Object -Average).Average}}
+  [ordered]@{{host='{host}';avg=($vals|Measure-Object -Average).Average;min=($vals|Measure-Object -Minimum).Minimum;max=($vals|Measure-Object -Maximum).Maximum;jitter=$jit;loss=(100.0*($sent-$recv)/$sent);received=$recv}}
+}}"""
+    data=_ps_json(script) or {'host':host,'avg':0,'min':0,'max':0,'jitter':0,'loss':100,'received':0}
+    for k in ('avg','min','max','jitter','loss'):
+        try:data[k]=float(data.get(k,0) or 0)
+        except Exception:data[k]=0.0
+    return data
 
 def benchmark():
-    return [ping('1.1.1.1'),ping('8.8.8.8')]
+    targets=[]
+    gw=_gateway()
+    if gw:targets.append(gw)
+    targets += ['1.1.1.1','8.8.8.8']
+    seen=set();rows=[]
+    for host in targets:
+        if host in seen:continue
+        seen.add(host);rows.append(ping(host))
+    return rows
 
 def backup(root):
     path=Path(root)/BACKUP_NAME
