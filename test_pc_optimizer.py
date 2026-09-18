@@ -75,4 +75,56 @@ class BenchmarkTests(unittest.TestCase):
         callbacks.pop()()
         self.assertEqual(calls,['done'])
 
+
+def healthy_scan(link='2.5 Gbps'):
+    return {
+        'health': {
+            'defender_available': True,
+            'antivirus_enabled': True,
+            'realtime_enabled': True,
+            'signature_age_days': 0,
+            'firewall': [{'Enabled': True}, {'Enabled': True}, {'Enabled': True}],
+            'physical_disks': [{'HealthStatus': 'Healthy'}],
+            'pending_reboot': False,
+        },
+        'settings': {
+            'game_auto': {'exists': True, 'value': 1},
+            'capture': {'exists': True, 'value': 0},
+            'dvr': {'exists': True, 'value': 0},
+            'power_plan': pc.BALANCED,
+        },
+        'bios': {'hints': []},
+        'maintenance': {'temp_size_mb': 500, 'disks': [{'drive': 'C:/', 'free_gb': 300, 'total_gb': 1000}]},
+        'startup_count': 4,
+        'network': {'status': 'online', 'rss': True, 'description': 'Realtek Gaming 2.5GbE Family Controller', 'link': link},
+    }
+
+class HealthScoreTests(unittest.TestCase):
+    def test_healthy_configuration_scores_100(self):
+        score, rec, ok, breakdown = pc.score_scan(healthy_scan())
+        self.assertEqual(score, 100)
+        self.assertEqual(sum(breakdown.values()), 100)
+
+    def test_1gb_link_on_25gbe_is_information_only(self):
+        score, rec, ok, breakdown = pc.score_scan(healthy_scan('1 Gbps'))
+        self.assertEqual(score, 100)
+        self.assertTrue(any(x.get('title') == 'Lien Ethernet à 1 Gbit/s' for x in rec))
+
+    def test_bad_configuration_drops_score_materially(self):
+        scan=healthy_scan()
+        scan['health'].update(antivirus_enabled=False,realtime_enabled=False,pending_reboot=True)
+        scan['health']['firewall']=[{'Enabled':False}]
+        scan['health']['physical_disks']=[{'HealthStatus':'Warning'}]
+        scan['settings']['game_auto']={'exists':True,'value':0}
+        scan['settings']['capture']={'exists':True,'value':1}
+        scan['settings']['dvr']={'exists':True,'value':1}
+        scan['settings']['power_plan']='00000000-0000-0000-0000-000000000000'
+        scan['bios']['hints']=['EXPO à vérifier']
+        scan['maintenance']['disks']=[{'drive':'C:/','free_gb':40,'total_gb':1000}]
+        scan['startup_count']=25
+        scan['network']['status']='offline'
+        score, rec, ok, breakdown=pc.score_scan(scan)
+        self.assertLess(score,30)
+        self.assertEqual(score,sum(breakdown.values()))
+
 if __name__=='__main__':unittest.main()
