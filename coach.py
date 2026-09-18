@@ -190,6 +190,8 @@ class PCPremiumUI:
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
         self.option_vars={k:tk.BooleanVar(value=(k in ('game','captures','balanced'))) for k in pc_optimizer.OPTIONS}
         self.nav_buttons={};self.reco_widgets=[];self._last_net=None
+        self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
+        self.game_benchmark_active=False;self._bench_hidden=False
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
@@ -387,8 +389,167 @@ class PCPremiumUI:
         self._button_row([('LISTER LES ENTRÉES',self.load_startup,COLORS['cyan2']),('Paramètres Démarrage',lambda:self._open('startup'),COLORS['panel2'])])
 
     def _page_games(self):
-        self._hero('Jeux détectés','Détection locale via Epic Games et chemins connus. Aucun fichier de jeu n’est modifié.',COLORS['purple'])
-        self._button_row([('DÉTECTER LES JEUX',self.load_games,COLORS['purple'])])
+        self._hero('Benchmark en jeu','Mesure Fortnite avec PresentMon via ETW Windows : aucune injection, aucune lecture mémoire et aucun fichier du jeu modifié.',COLORS['purple'])
+        engine=pc_optimizer.presentmon_status();game=pc_optimizer.game_process_running()
+        card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        card.pack(fill='x',padx=10,pady=5)
+        left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=14,pady=12)
+        ctk.CTkLabel(left,text='MOTEUR DE MESURE',text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(left,text='PresentMon '+(str(engine.get('version')) if engine.get('installed') else 'non installé'),
+            text_color=COLORS['text'],font=ctk.CTkFont(size=15,weight='bold')).pack(anchor='w',pady=(2,2))
+        ctk.CTkLabel(left,text='Source officielle : GameTechDev/PresentMon • Licence MIT • capture externe ETW',
+            text_color=COLORS['muted'],font=ctk.CTkFont(size=9)).pack(anchor='w')
+        status='FORTNITE DÉTECTÉ' if game.get('running') else 'FORTNITE NON LANCÉ'
+        color=COLORS['success'] if game.get('running') else COLORS['warning']
+        ctk.CTkLabel(left,text='● '+status,text_color=color,font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',pady=(7,0))
+        right=ctk.CTkFrame(card,fg_color='transparent');right.pack(side='right',padx=14,pady=12)
+        if not engine.get('installed'):
+            ctk.CTkButton(right,text='INSTALLER LE MOTEUR',command=self.install_presentmon,width=150,height=34,corner_radius=9,fg_color=COLORS['purple']).pack()
+        else:
+            ctk.CTkButton(right,text='DOSSIER RÉSULTATS',command=lambda:self._open_benchmark_folder(),width=145,height=34,corner_radius=9,fg_color=COLORS['panel2']).pack()
+
+        controls=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        controls.pack(fill='x',padx=10,pady=5)
+        ctk.CTkLabel(controls,text='BENCHMARK FORTNITE',text_color=COLORS['text'],font=ctk.CTkFont(size=15,weight='bold')).pack(anchor='w',padx=14,pady=(12,3))
+        ctk.CTkLabel(controls,text='Entre dans une partie ou une scène reproductible. Acolyte se minimise, attend 5 secondes puis mesure la durée choisie.',
+            text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=850,justify='left').pack(anchor='w',padx=14)
+        row=ctk.CTkFrame(controls,fg_color='transparent');row.pack(fill='x',padx=14,pady=12)
+        ctk.CTkLabel(row,text='Durée',text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(side='left',padx=(0,6))
+        ctk.CTkComboBox(row,variable=self.game_duration_var,values=['30 s','60 s','90 s','120 s','180 s'],width=105,state='readonly').pack(side='left',padx=(0,12))
+        ctk.CTkLabel(row,text='Phase',text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(side='left',padx=(0,6))
+        ctk.CTkComboBox(row,variable=self.game_phase_var,values=['AVANT optimisation','APRÈS optimisation','Libre'],width=165,state='readonly').pack(side='left',padx=(0,12))
+        self.game_bench_btn=ctk.CTkButton(row,text='▶  DÉMARRER LE BENCHMARK',command=self.start_game_benchmark,width=205,height=38,corner_radius=10,fg_color=COLORS['purple'])
+        self.game_bench_btn.pack(side='left')
+
+        history=pc_optimizer.benchmark_history(5)
+        if history:
+            self._render_game_result(history[-1],history[-2] if len(history)>1 else None)
+            self._render_game_history(history)
+        else:
+            self._action_card('Aucun benchmark enregistré','Installe PresentMon si nécessaire, lance Fortnite, choisis 60 secondes puis démarre le benchmark.','Prêt','Mesuré','Nul')
+
+        self._button_row([('DÉTECTER LES JEUX INSTALLÉS',self.load_games,COLORS['panel2'])])
+
+    def install_presentmon(self):
+        if self.busy:return
+        if not messagebox.askyesno('Installer PresentMon','Acolyte va télécharger le binaire x64 officiel depuis le dépôt GitHub GameTechDev/PresentMon.\n\nPresentMon est un outil open-source sous licence MIT. Continuer ?'):return
+        self._run('Installation PresentMon',pc_optimizer.install_presentmon,lambda x:self._presentmon_installed(x))
+
+    def _presentmon_installed(self,result):
+        self._show_result('Moteur benchmark installé','PresentMon '+str(result.get('version',''))+' installé.\nSource : '+str(result.get('source',''))+'\nLicence : '+str(result.get('license','')))
+        self.show('games')
+
+    def _open_benchmark_folder(self):
+        try:pc_optimizer.open_benchmark_folder()
+        except Exception as exc:self._error('Dossier benchmark',exc)
+
+    def start_game_benchmark(self):
+        if self.busy:return
+        engine=pc_optimizer.presentmon_status()
+        if not engine.get('installed'):
+            return self.install_presentmon()
+        game=pc_optimizer.game_process_running()
+        if not game.get('running'):
+            return messagebox.showinfo('Benchmark Fortnite','Fortnite n’est pas lancé.\n\nOuvre le jeu, entre dans une partie ou une scène de test, puis reviens cliquer sur Démarrer le benchmark.')
+        if not pc_optimizer.is_admin():
+            return messagebox.showinfo('Administrateur','Pour capturer les événements ETW de façon fiable, relance Acolyte avec « Exécuter en tant qu’administrateur ».')
+        try:duration=int(self.game_duration_var.get().split()[0])
+        except Exception:duration=60
+        label=self.game_phase_var.get().strip() or 'Libre'
+        if not messagebox.askyesno('Benchmark Fortnite',f'Capture : {duration} secondes\nPhase : {label}\n\nAcolyte va se minimiser. Tu auras 5 secondes pour retourner dans Fortnite avant le début de la mesure.\n\nPour comparer AVANT/APRÈS, refais exactement la même scène, résolution et limite FPS. Continuer ?'):return
+        try:
+            top=self.parent.winfo_toplevel();top.iconify();self._bench_hidden=True
+        except Exception:pass
+        self.game_benchmark_active=True
+        self._run('Benchmark Fortnite',lambda:pc_optimizer.run_game_benchmark(duration,label,delay=5),self._game_benchmark_done)
+
+    def _restore_bench_window(self):
+        self.game_benchmark_active=False
+        if self._bench_hidden:
+            self._bench_hidden=False
+            try:
+                top=self.parent.winfo_toplevel();top.deiconify();top.lift();top.focus_force()
+            except Exception:pass
+
+    def _game_benchmark_done(self,result):
+        self._restore_bench_window()
+        if result.get('label')=='AVANT optimisation':self.game_phase_var.set('APRÈS optimisation')
+        self._show_result('Benchmark Fortnite',self._format_game_result(result))
+        self.show('games')
+        messagebox.showinfo('Benchmark terminé',f"FPS moyen : {result.get('avg_fps',0):.1f}\n1% low : {result.get('one_percent_low',0):.1f}\n0,1% low : {result.get('point_one_percent_low',0):.1f}\nFrametime moyen : {result.get('avg_frametime_ms',0):.2f} ms")
+
+    def _format_game_result(self,r):
+        return (
+            f"{r.get('label','Benchmark')} • {r.get('timestamp','')}\n"
+            f"FPS moyen : {r.get('avg_fps',0):.1f}\n"
+            f"1% low : {r.get('one_percent_low',0):.1f}\n"
+            f"0,1% low : {r.get('point_one_percent_low',0):.1f}\n"
+            f"Frametime moyen : {r.get('avg_frametime_ms',0):.2f} ms\n"
+            f"P99 frametime : {r.get('p99_frametime_ms',0):.2f} ms\n"
+            f"Pire frametime : {r.get('worst_frametime_ms',0):.2f} ms\n"
+            f"Frames >33 ms : {r.get('stutters_33ms',0)} • >50 ms : {r.get('stutters_50ms',0)}\n"
+            f"Images analysées : {r.get('frames',0)} • moteur : {r.get('engine_version','?')}"
+        )
+
+    def _metric_box(self,parent,title,value,unit,color):
+        box=ctk.CTkFrame(parent,fg_color='#0B1729',corner_radius=12,border_width=1,border_color='#203354')
+        box.pack(side='left',fill='both',expand=True,padx=4)
+        ctk.CTkLabel(box,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',padx=11,pady=(9,0))
+        ctk.CTkLabel(box,text=f'{value:.1f} {unit}',text_color=color,font=ctk.CTkFont(size=20,weight='bold')).pack(anchor='w',padx=11,pady=(2,9))
+
+    def _render_game_result(self,result,previous=None):
+        card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        card.pack(fill='x',padx=10,pady=5)
+        top=ctk.CTkFrame(card,fg_color='transparent');top.pack(fill='x',padx=12,pady=(11,4))
+        ctk.CTkLabel(top,text='DERNIER BENCHMARK • '+str(result.get('label','')),text_color=COLORS['text'],font=ctk.CTkFont(size=14,weight='bold')).pack(side='left')
+        ctk.CTkLabel(top,text=str(result.get('timestamp','')),text_color=COLORS['muted'],font=ctk.CTkFont(size=9)).pack(side='right')
+        metrics=ctk.CTkFrame(card,fg_color='transparent');metrics.pack(fill='x',padx=8,pady=(2,8))
+        self._metric_box(metrics,'FPS MOYEN',float(result.get('avg_fps') or 0),'FPS',COLORS['success'])
+        self._metric_box(metrics,'1% LOW',float(result.get('one_percent_low') or 0),'FPS',COLORS['cyan'])
+        self._metric_box(metrics,'0,1% LOW',float(result.get('point_one_percent_low') or 0),'FPS',COLORS['purple2'])
+        self._metric_box(metrics,'FRAMETIME',float(result.get('avg_frametime_ms') or 0),'ms',COLORS['gold'])
+        self._draw_frametime_chart(card,result.get('frametime_sample') or [])
+        if previous:
+            comp=pc_optimizer.compare_game_benchmarks(previous,result)
+            line=ctk.CTkFrame(card,fg_color='#0A172A',corner_radius=10);line.pack(fill='x',padx=12,pady=(2,11))
+            pieces=[]
+            for key,label in [('avg_fps','FPS'),('one_percent_low','1% low'),('point_one_percent_low','0,1% low')]:
+                d=comp.get(key,{})
+                pct=d.get('percent')
+                if pct is not None:pieces.append(f"{label} {pct:+.1f}%")
+            ctk.CTkLabel(line,text='Comparaison au benchmark précédent :  '+'   •   '.join(pieces),text_color=COLORS['cyan'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=10,pady=8)
+
+    def _draw_frametime_chart(self,parent,values):
+        if not values:return
+        holder=ctk.CTkFrame(parent,fg_color='transparent');holder.pack(fill='x',padx=12,pady=(0,9))
+        ctk.CTkLabel(holder,text='FRAMETIME • plus la ligne est basse et stable, mieux c’est',text_color=COLORS['muted'],font=ctk.CTkFont(size=8,weight='bold')).pack(anchor='w')
+        canvas=tk.Canvas(holder,height=105,bg='#07101F',highlightthickness=1,highlightbackground='#203354')
+        canvas.pack(fill='x',pady=(4,0))
+        def draw(event=None):
+            canvas.delete('all');w=max(100,canvas.winfo_width());h=max(70,canvas.winfo_height())
+            vals=[float(x) for x in values if isinstance(x,(int,float)) and x>0]
+            if len(vals)<2:return
+            cap=max(33.3,min(100.0,pc_optimizer._percentile(vals,99.5)*1.25))
+            for ms,label,color in [(16.67,'60 FPS','#173D43'),(33.33,'30 FPS','#4A381B')]:
+                y=h-8-min(1,ms/cap)*(h-18);canvas.create_line(0,y,w,y,fill=color,dash=(4,4));canvas.create_text(5,y-7,text=label,fill='#6F88A8',anchor='w',font=('Segoe UI',7))
+            pts=[]
+            for i,v in enumerate(vals):
+                x=4+i*(w-8)/(len(vals)-1);y=h-7-min(1,v/cap)*(h-16);pts.extend((x,y))
+            canvas.create_line(*pts,fill=COLORS['cyan'],width=2,smooth=False)
+        canvas.bind('<Configure>',draw);self.parent.after(80,draw)
+
+    def _render_game_history(self,rows):
+        card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        card.pack(fill='x',padx=10,pady=5)
+        ctk.CTkLabel(card,text='HISTORIQUE RÉCENT',text_color=COLORS['text'],font=ctk.CTkFont(size=11,weight='bold')).pack(anchor='w',padx=12,pady=(10,5))
+        for r in reversed(rows[-5:]):
+            row=ctk.CTkFrame(card,fg_color='#0A172A',corner_radius=8);row.pack(fill='x',padx=10,pady=2)
+            ctk.CTkLabel(row,text=str(r.get('label','Libre')),text_color=COLORS['text'],font=ctk.CTkFont(size=9,weight='bold'),width=125,anchor='w').pack(side='left',padx=8,pady=6)
+            ctk.CTkLabel(row,text=f"{float(r.get('avg_fps') or 0):.1f} FPS",text_color=COLORS['success'],font=ctk.CTkFont(size=9,weight='bold'),width=85).pack(side='left')
+            ctk.CTkLabel(row,text=f"1% {float(r.get('one_percent_low') or 0):.1f}",text_color=COLORS['cyan'],font=ctk.CTkFont(size=9),width=75).pack(side='left')
+            ctk.CTkLabel(row,text=f"0,1% {float(r.get('point_one_percent_low') or 0):.1f}",text_color=COLORS['purple2'],font=ctk.CTkFont(size=9),width=80).pack(side='left')
+            ctk.CTkLabel(row,text=str(r.get('timestamp','')),text_color=COLORS['muted'],font=ctk.CTkFont(size=8)).pack(side='right',padx=8)
+        ctk.CTkFrame(card,height=6,fg_color='transparent').pack()
 
     def _page_checkup(self):
         self._hero('Check-up système','Espace disque et fichiers temporaires. Le nettoyage ne touche qu’au TEMP utilisateur ancien de plus de 7 jours.',COLORS['success'])
@@ -571,6 +732,7 @@ class PCPremiumUI:
         elif value is not None:self._show_result(label,value)
 
     def _error(self,label,exc):
+        self._restore_bench_window()
         try:
             self.scan_progress.stop();self.scan_progress.configure(mode='determinate');self.scan_progress.set(0)
         except Exception:pass
@@ -596,6 +758,8 @@ class PCPremiumUI:
 
     def _tick_live(self):
         try:
+            if self.game_benchmark_active:
+                self.parent.after(1000,self._tick_live);return
             if psutil is not None:
                 cpu=psutil.cpu_percent(interval=None);mem=psutil.virtual_memory()
                 self.kpis['cpu'][1].configure(text=f'Charge {cpu:.0f}%')
