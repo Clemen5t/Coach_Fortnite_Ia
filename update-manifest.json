@@ -10,6 +10,7 @@
     "VERSION",
     "coach.py",
     "local_ai.py",
+    "pc_optimizer.py",
     "requirements.txt",
     "test_local_ai.py",
     "test_updater.py",
