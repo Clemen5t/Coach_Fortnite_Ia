@@ -214,7 +214,7 @@ class Coach:
         for label,command,style in [('Analyser le PC',self.pc_analyze,'Ghost.TButton'),('Benchmark réseau',self.pc_benchmark,'Cyan.TButton'),('Appliquer la sélection',self.pc_optimize,'Primary.TButton'),('Restaurer',self.pc_restore,'Danger.TButton')]:
             ttk.Button(toolbar,text=label,command=command,style=style).pack(side='left',padx=(0,6))
         grid=tk.Frame(wrap,bg=COLORS['bg']);grid.pack(fill='x')
-        categories=[('apps','LOGICIELS','Désinstallation au choix'),('startup','DÉMARRAGE','Applications du compte'),('updates','MISES À JOUR','Windows et pilotes officiels'),('ram','MÉMOIRE RAM','Diagnostic et guide EXPO/XMP'),('gpu','CARTE GRAPHIQUE','Pilotes et réglages guidés'),('windows','WINDOWS','Mode Jeu et captures'),('usb','PÉRIPHÉRIQUES USB','Diagnostic et dépannage'),('power','ALIMENTATION','Plan actif et équilibre')]
+        categories=[('dashboard','TABLEAU DE BORD','État du PC et matériel'),('performance','PERFORMANCES','Mode Jeu, captures, alimentation'),('network','RÉSEAU','Ping, carte réseau et DNS'),('gpu','CARTE GRAPHIQUE','Pilotes et réglages guidés'),('privacy','CONFIDENTIALITÉ','Publicité et suggestions Windows'),('startup','DÉMARRAGE','Applications du compte'),('games','JEUX','Détection locale et Fortnite'),('checkup','CHECK-UP','Temporaires, stockage et entretien'),('bios','BIOS / RAM','EXPO/XMP, UEFI et virtualisation'),('apps','LOGICIELS','Désinstallation au choix'),('updates','MISES À JOUR','Windows et pilotes officiels'),('usb','USB','Diagnostic et dépannage')]
         for i,(key,title,subtitle) in enumerate(categories):
             grid.grid_columnconfigure(i%4,weight=1,uniform='pc')
             tk.Button(grid,text=title+'\n'+subtitle,command=lambda k=key:self.pc_select_category(k),bg=COLORS['panel2'],fg=COLORS['text'],activebackground=COLORS['purple'],activeforeground='white',relief='flat',font=('Segoe UI',10),padx=8,pady=12,wraplength=225).grid(row=i//4,column=i%4,sticky='nsew',padx=3,pady=3)
@@ -228,7 +228,7 @@ class Coach:
         self.pc_output=tk.Text(frame,height=6,wrap='word',bg=COLORS['log'],fg='#dbeafe',relief='flat',font=('Consolas',10),padx=12,pady=10)
         scroll=ttk.Scrollbar(frame,command=self.pc_output.yview);scroll.pack(side='right',fill='y')
         self.pc_output.configure(yscrollcommand=scroll.set);self.pc_output.pack(fill='both',expand=True)
-        self.pc_select_category('windows')
+        self.pc_select_category('dashboard')
         self.pc_write('Sélectionne les actions voulues puis clique sur Appliquer la sélection.\nLa sauvegarde initiale est conservée jusqu’à la restauration.\nLes désinstallations sont séparées et ne sont pas annulées par Restaurer.\nRAM/BIOS et pilotes : diagnostic et outils officiels, pas de modification automatique.')
 
     def pc_select_category(self,category):
@@ -238,27 +238,35 @@ class Coach:
         for child in self.pc_table.get_children():self.pc_table.delete(child)
         for child in self.pc_detail.winfo_children():child.destroy()
         descriptions={
-            'apps':'Retire uniquement les applications que tu n’utilises pas. Les données locales peuvent être supprimées. Réinstallation via Microsoft Store.',
+            'dashboard':'Vue d’ensemble locale du matériel, de Windows et du réseau actif. Aucun changement n’est appliqué.',
+            'performance':'Réglages gaming simples et restaurables : Mode Jeu, captures Game Bar et plan Équilibré. Aucun overclocking automatique.',
+            'network':'Mesure ICMP réelle vers la box et Internet, plus lecture de RSS/RSC, DNS, passerelle et économie d’énergie. Aucun tweak réseau forcé sans mesure.',
+            'gpu':'Lis la version des pilotes GPU et ouvre les outils officiels. Aucun overclocking, undervolt ou profil Adrenalin forcé.',
+            'privacy':'Réglages de confidentialité du compte Windows : identifiant publicitaire et suggestions promotionnelles. Sauvegardés avant modification.',
             'startup':'Entrées du registre Run du compte actuel. Une entrée présente peut déjà être désactivée dans Windows. Les autres démarrages se gèrent dans les paramètres Windows.',
+            'games':'Détection locale des jeux installés depuis les manifests Epic Games et chemins connus. Aucun fichier de jeu n’est modifié.',
+            'checkup':'Analyse les temporaires utilisateur et l’espace disque. Le nettoyage ne touche qu’aux fichiers temporaires anciens de plus de 7 jours.',
+            'bios':'Diagnostic en lecture seule : RAM configurée, vitesse annoncée, UEFI et virtualisation. EXPO/XMP reste une action BIOS manuelle.',
+            'apps':'Retire uniquement les applications que tu n’utilises pas. Les données locales peuvent être supprimées. Réinstallation via Microsoft Store.',
             'updates':'Ouvre Windows Update ou le fabricant pour vérifier et installer les mises à jour. Acolyte ne déclare pas un pilote à jour sans vérification.',
-            'ram':'Lecture des barrettes et de leur vitesse configurée. EXPO/XMP se vérifie dans le BIOS ; aucun profil mémoire ni tension n’est modifié par Acolyte.',
-            'gpu':'Lis la version du pilote, puis utilise le panneau du fabricant pour les réglages. Aucun overclocking GPU automatique.',
-            'windows':'Réglages du compte courant, sauvegardés avant modification. Les captures Game Bar restent disponibles tant que leur désactivation n’est pas cochée.',
-            'usb':'La suspension USB reste activée par défaut. Désactive-la uniquement pour comparer en cas de déconnexions sur secteur ; aucun gain de latence n’est garanti.',
-            'power':'Choisis explicitement le plan Équilibré. L’ancien plan actif est conservé pour la restauration.'}
+            'usb':'La suspension USB reste activée par défaut. Désactive-la uniquement pour comparer en cas de déconnexions sur secteur ; aucun gain de latence n’est garanti.'}
         tk.Label(self.pc_detail,text=descriptions[category],bg=COLORS['panel'],fg=COLORS['text'],wraplength=980,justify='left',anchor='w',padx=10,pady=8).pack(fill='x')
-        choices={'windows':['game','captures'],'power':['balanced'],'usb':['usb']}.get(category,[])
+        choices={'performance':['game','captures','balanced'],'privacy':['ads','suggestions'],'usb':['usb']}.get(category,[])
         for key in choices:
             tk.Checkbutton(self.pc_detail,text=pc_optimizer.OPTIONS[key][0],variable=self.pc_options[key],bg=COLORS['panel'],fg=COLORS['text'],selectcolor=COLORS['panel3'],activebackground=COLORS['panel'],activeforeground=COLORS['text']).pack(anchor='w',padx=8)
         actions={
-            'apps':[('Lister les applications proposées',lambda:self.pc_inventory('apps')),('Désinstaller la sélection',lambda:self.pc_item_action('apps')),('Toutes les applications',lambda:self.pc_open('apps')),('Microsoft Store',lambda:self.pc_open('store'))],
-            'startup':[('Lister les entrées',lambda:self.pc_inventory('startup')),('Retirer du démarrage',lambda:self.pc_item_action('startup')),('Démarrage Windows',lambda:self.pc_open('startup'))],
-            'updates':[('Windows Update',lambda:self.pc_open('updates')),('AMD / chipset',lambda:self.pc_open('amd')),('NVIDIA',lambda:self.pc_open('nvidia')),('Intel',lambda:self.pc_open('intel'))],
-            'ram':[('Analyser la RAM',lambda:self.pc_diagnostic('ram')),('Support MSI B650 Gaming Plus WiFi',lambda:self.pc_open('board'))],
+            'dashboard':[('Analyser le PC',self.pc_analyze),('Benchmark réseau',self.pc_benchmark)],
+            'performance':[('Ouvrir le mode Jeu',lambda:self.pc_open('game')),('Alimentation Windows',lambda:self.pc_open('power'))],
+            'network':[('Benchmark réseau',self.pc_benchmark),('Diagnostic carte réseau',lambda:self.pc_diagnostic('network'))],
             'gpu':[('Lire les pilotes GPU',lambda:self.pc_diagnostic('gpu')),('Support AMD',lambda:self.pc_open('amd')),('Support NVIDIA',lambda:self.pc_open('nvidia')),('Graphiques Windows',lambda:self.pc_open('graphics'))],
-            'windows':[('Ouvrir le mode Jeu',lambda:self.pc_open('game'))],
-            'usb':[('Lister les périphériques USB',lambda:self.pc_diagnostic('usb'))],
-            'power':[('Voir les plans disponibles',lambda:self.pc_diagnostic('power')),('Alimentation Windows',lambda:self.pc_open('power'))]}
+            'privacy':[('Paramètres confidentialité',lambda:self.pc_open('privacy'))],
+            'startup':[('Lister les entrées',lambda:self.pc_inventory('startup')),('Retirer du démarrage',lambda:self.pc_item_action('startup')),('Démarrage Windows',lambda:self.pc_open('startup'))],
+            'games':[('Détecter les jeux',lambda:self.pc_diagnostic('games'))],
+            'checkup':[('Analyser',lambda:self.pc_diagnostic('checkup')),('Nettoyer temporaires > 7 jours',lambda:self.pc_cleanup_temp())],
+            'bios':[('Analyser BIOS / RAM',lambda:self.pc_diagnostic('bios')),('Support MSI B650 Gaming Plus WiFi',lambda:self.pc_open('board'))],
+            'apps':[('Lister les applications proposées',lambda:self.pc_inventory('apps')),('Désinstaller la sélection',lambda:self.pc_item_action('apps')),('Toutes les applications',lambda:self.pc_open('apps')),('Microsoft Store',lambda:self.pc_open('store'))],
+            'updates':[('Windows Update',lambda:self.pc_open('updates')),('AMD / chipset',lambda:self.pc_open('amd')),('NVIDIA',lambda:self.pc_open('nvidia')),('Intel',lambda:self.pc_open('intel'))],
+            'usb':[('Lister les périphériques USB',lambda:self.pc_diagnostic('usb'))]}
         bar=tk.Frame(self.pc_detail,bg=COLORS['panel']);bar.pack(fill='x',padx=8,pady=7)
         for label,command in actions[category]:ttk.Button(bar,text=label,command=command,style='Ghost.TButton').pack(side='left',padx=(0,5))
         if category in ('apps','startup'):self.pc_table.pack(fill='x',after=self.pc_detail,pady=(0,5))
@@ -289,6 +297,11 @@ class Coach:
 
     def pc_diagnostic(self,category):
         self.pc_job('Diagnostic '+category,lambda:pc_optimizer.diagnostics(category))
+
+    def pc_cleanup_temp(self):
+        if self.pc_busy:return
+        if not messagebox.askyesno('Nettoyage temporaire','Supprimer uniquement les fichiers du dossier TEMP utilisateur vieux de plus de 7 jours ?\n\nLes fichiers récents, verrouillés et situés hors de TEMP seront conservés.'):return
+        self.pc_job('Nettoyage des temporaires',lambda:pc_optimizer.cleanup_temp(7))
 
     def pc_write(self,text):
         self.pc_output.delete('1.0','end');self.pc_output.insert('end',text);self.pc_output.see('end')
@@ -334,7 +347,7 @@ class Coach:
     def pc_optimize(self):
         if self.pc_busy:return
         options=[key for key,var in self.pc_options.items() if var.get()]
-        if not options:messagebox.showinfo('Sélection','Coche au moins un réglage dans Windows, USB ou Alimentation.');return
+        if not options:messagebox.showinfo('Sélection','Coche au moins un réglage dans Performances, Confidentialité ou USB.');return
         details='\n'.join('• '+pc_optimizer.OPTIONS[key][0] for key in options)
         if not messagebox.askyesno('Appliquer la sélection',details+'\n\nSauvegarde avant modification, puis vérification.\nRestaurer rétablit les valeurs sauvegardées.\nAppliquer ces changements ?'):return
         self.pc_job('Application des réglages Windows',lambda:pc_optimizer.optimize(APP_DIR,options))
