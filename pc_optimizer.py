@@ -38,16 +38,36 @@ def _gateway():
     return out.strip() if not code and out.strip() else None
 
 def ping(host='1.1.1.1', count=16):
-    script=f"""$r=Test-Connection -ComputerName '{host}' -Count {int(count)} -ErrorAction SilentlyContinue
-$vals=@($r|ForEach-Object {{$_.ResponseTime}}|Where-Object {{$_ -ne $null}})
+    script=f"""$p=New-Object System.Net.NetworkInformation.Ping
+$vals=New-Object System.Collections.Generic.List[double]
 $sent={int(count)}
+for($i=0;$i -lt $sent;$i++){{
+  try{{
+    $r=$p.Send('{host}',1500)
+    if($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success){{$vals.Add([double]$r.RoundtripTime)}}
+  }}catch{{}}
+  Start-Sleep -Milliseconds 60
+}}
 $recv=$vals.Count
 if($recv -eq 0){{[ordered]@{{host='{host}';avg=0;min=0;max=0;jitter=0;loss=100;received=0}}}}
 else{{
   $jit=0
-  if($recv -gt 1){{$diff=@();for($i=1;$i -lt $recv;$i++){{$diff += [math]::Abs([double]$vals[$i]-[double]$vals[$i-1])}};$jit=($diff|Measure-Object -Average).Average}}
-  [ordered]@{{host='{host}';avg=($vals|Measure-Object -Average).Average;min=($vals|Measure-Object -Minimum).Minimum;max=($vals|Measure-Object -Maximum).Maximum;jitter=$jit;loss=(100.0*($sent-$recv)/$sent);received=$recv}}
-}}"""
+  if($recv -gt 1){{
+    $diff=New-Object System.Collections.Generic.List[double]
+    for($i=1;$i -lt $recv;$i++){{$diff.Add([math]::Abs($vals[$i]-$vals[$i-1]))}}
+    $jit=($diff|Measure-Object -Average).Average
+  }}
+  [ordered]@{{
+    host='{host}'
+    avg=($vals|Measure-Object -Average).Average
+    min=($vals|Measure-Object -Minimum).Minimum
+    max=($vals|Measure-Object -Maximum).Maximum
+    jitter=$jit
+    loss=(100.0*($sent-$recv)/$sent)
+    received=$recv
+  }}
+}}
+$p.Dispose()"""
     data=_ps_json(script) or {'host':host,'avg':0,'min':0,'max':0,'jitter':0,'loss':100,'received':0}
     for k in ('avg','min','max','jitter','loss'):
         try:data[k]=float(data.get(k,0) or 0)
