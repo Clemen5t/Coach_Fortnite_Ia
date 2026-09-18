@@ -682,3 +682,213 @@ def recommended_options(scan):
 def apply_selected(options, root):
     return optimize(root, options)
 
+
+
+# === ACOLYTE IN-GAME BENCHMARK ===
+# Mesure externe via PresentMon (GameTechDev/PresentMon, licence MIT).
+# Aucune injection dans Fortnite, aucune lecture de mémoire du jeu et aucun fichier du jeu modifié.
+BENCH_DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AcolyteFortnite' / 'Benchmark'
+PRESENTMON_DIR = BENCH_DATA_DIR / 'PresentMon'
+PRESENTMON_EXE = PRESENTMON_DIR / 'PresentMon.exe'
+PRESENTMON_META = PRESENTMON_DIR / 'metadata.json'
+BENCH_HISTORY = BENCH_DATA_DIR / 'history.json'
+FORTNITE_PROCESS = 'FortniteClient-Win64-Shipping.exe'
+PRESENTMON_REPO_API = 'https://api.github.com/repos/GameTechDev/PresentMon/releases/latest'
+
+def _http_json(url, timeout=25):
+    import urllib.request
+    req=urllib.request.Request(url,headers={'User-Agent':'Acolyte-Performance','Accept':'application/vnd.github+json'})
+    with urllib.request.urlopen(req,timeout=timeout) as response:
+        final=response.geturl()
+        if not final.startswith('https://api.github.com/'):
+            raise RuntimeError('Réponse GitHub inattendue.')
+        data=response.read(2*1024*1024+1)
+    if len(data)>2*1024*1024:raise RuntimeError('Réponse GitHub trop volumineuse.')
+    return json.loads(data.decode('utf-8'))
+
+def presentmon_status():
+    meta={}
+    try:
+        if PRESENTMON_META.exists():meta=json.loads(PRESENTMON_META.read_text(encoding='utf-8'))
+    except Exception:meta={}
+    return {
+        'installed':PRESENTMON_EXE.exists() and PRESENTMON_EXE.stat().st_size>100000,
+        'path':str(PRESENTMON_EXE),
+        'version':meta.get('version','inconnue'),
+        'source':'GameTechDev/PresentMon',
+        'license':'MIT'
+    }
+
+def install_presentmon():
+    """Télécharge uniquement l'exécutable x64 officiel de la dernière release GitHub."""
+    import urllib.request, urllib.parse
+    meta=_http_json(PRESENTMON_REPO_API)
+    tag=str(meta.get('tag_name') or meta.get('name') or 'latest')
+    assets=meta.get('assets') or []
+    candidates=[]
+    for asset in assets:
+        name=str(asset.get('name') or '')
+        url=str(asset.get('browser_download_url') or '')
+        if re.fullmatch(r'PresentMon-[0-9A-Za-z._-]+-x64\.exe',name,re.I) and url.startswith('https://github.com/GameTechDev/PresentMon/releases/download/'):
+            candidates.append((name,url,int(asset.get('size') or 0)))
+    if not candidates:raise RuntimeError('Exécutable PresentMon x64 officiel introuvable dans la dernière release.')
+    name,url,declared_size=candidates[0]
+    if declared_size and declared_size>50*1024*1024:raise RuntimeError('Binaire PresentMon anormalement volumineux.')
+    PRESENTMON_DIR.mkdir(parents=True,exist_ok=True)
+    tmp=PRESENTMON_DIR/(name+'.download')
+    req=urllib.request.Request(url,headers={'User-Agent':'Acolyte-Performance'})
+    try:
+        with urllib.request.urlopen(req,timeout=60) as response, open(tmp,'wb') as out:
+            final=urllib.parse.urlparse(response.geturl())
+            allowed=(final.scheme=='https' and (
+                final.hostname=='github.com' or
+                (final.hostname or '').endswith('.githubusercontent.com') or
+                final.hostname=='release-assets.githubusercontent.com'))
+            if not allowed:raise RuntimeError('Redirection de téléchargement PresentMon refusée.')
+            total=0
+            while True:
+                chunk=response.read(1024*256)
+                if not chunk:break
+                total+=len(chunk)
+                if total>50*1024*1024:raise RuntimeError('Téléchargement PresentMon trop volumineux.')
+                out.write(chunk)
+        data=tmp.read_bytes()[:2]
+        if data!=b'MZ' or tmp.stat().st_size<100000:raise RuntimeError('Le fichier téléchargé n’est pas un exécutable Windows valide.')
+        os.replace(tmp,PRESENTMON_EXE)
+        PRESENTMON_META.write_text(json.dumps({'version':tag,'asset':name,'source':url,'installed_at':time.strftime('%Y-%m-%d %H:%M:%S')},ensure_ascii=False,indent=2),encoding='utf-8')
+    finally:
+        try:
+            if tmp.exists():tmp.unlink()
+        except OSError:pass
+    return presentmon_status()
+
+def game_process_running(process_name=FORTNITE_PROCESS):
+    try:
+        import psutil
+        for proc in psutil.process_iter(['name','pid']):
+            try:
+                if str(proc.info.get('name') or '').lower()==process_name.lower():
+                    return {'running':True,'pid':int(proc.info['pid']),'name':proc.info['name']}
+            except (psutil.NoSuchProcess,psutil.AccessDenied):pass
+    except Exception:pass
+    out,err,code=_run(['tasklist.exe','/FI','IMAGENAME eq '+process_name,'/FO','CSV','/NH'])
+    if code==0 and process_name.lower() in out.lower():
+        return {'running':True,'pid':None,'name':process_name}
+    return {'running':False,'pid':None,'name':process_name}
+
+def _percentile(values,p):
+    values=sorted(float(x) for x in values)
+    if not values:return None
+    if len(values)==1:return values[0]
+    pos=(len(values)-1)*(float(p)/100.0)
+    lo=int(pos);hi=min(lo+1,len(values)-1);frac=pos-lo
+    return values[lo]*(1-frac)+values[hi]*frac
+
+def _parse_presentmon_csv(path):
+    import csv
+    frames=[];application='';column=''
+    with open(path,'r',encoding='utf-8-sig',errors='replace',newline='') as f:
+        reader=csv.DictReader(f)
+        headers=reader.fieldnames or []
+        for candidate in ('msBetweenPresents','MsBetweenPresents','FrameTime','MsBetweenDisplayChange','msBetweenDisplayChange'):
+            if candidate in headers:
+                column=candidate;break
+        if not column:raise RuntimeError('Colonne de frametime PresentMon introuvable : '+', '.join(headers[:20]))
+        for row in reader:
+            if not application:application=str(row.get('Application') or '')
+            try:value=float(str(row.get(column,'')).replace(',','.'))
+            except (TypeError,ValueError):continue
+            if 0.05<=value<=2000:frames.append(value)
+    if len(frames)<120:raise RuntimeError(f'Capture trop courte : seulement {len(frames)} images exploitables.')
+    # Conserve les vrais stutters ; seules les valeurs non valides sont écartées.
+    avg_ft=statistics.mean(frames)
+    p95=_percentile(frames,95);p99=_percentile(frames,99);p999=_percentile(frames,99.9)
+    fps_avg=1000.0/avg_ft if avg_ft else 0
+    low1=1000.0/p99 if p99 else 0
+    low01=1000.0/p999 if p999 else 0
+    median_ft=statistics.median(frames)
+    sample=frames if len(frames)<=360 else [frames[round(i*(len(frames)-1)/359)] for i in range(360)]
+    return {
+        'application':application,'frame_column':column,'frames':len(frames),
+        'duration_seconds':sum(frames)/1000.0,
+        'avg_fps':fps_avg,'median_fps':1000.0/median_ft if median_ft else 0,
+        'one_percent_low':low1,'point_one_percent_low':low01,
+        'avg_frametime_ms':avg_ft,'p95_frametime_ms':p95,'p99_frametime_ms':p99,
+        'p999_frametime_ms':p999,'worst_frametime_ms':max(frames),
+        'stutters_33ms':sum(1 for x in frames if x>33.333),
+        'stutters_50ms':sum(1 for x in frames if x>50),
+        'frametime_sample':sample
+    }
+
+def _benchmark_history_read():
+    try:
+        data=json.loads(BENCH_HISTORY.read_text(encoding='utf-8'))
+        return data if isinstance(data,list) else []
+    except (FileNotFoundError,ValueError,OSError):return []
+
+def _benchmark_history_write(rows):
+    BENCH_DATA_DIR.mkdir(parents=True,exist_ok=True)
+    temp=BENCH_HISTORY.with_suffix('.tmp')
+    temp.write_text(json.dumps(rows[-30:],ensure_ascii=False,indent=2),encoding='utf-8')
+    os.replace(temp,BENCH_HISTORY)
+
+def benchmark_history(limit=10):
+    rows=_benchmark_history_read()
+    return rows[-max(1,int(limit)):]
+
+def run_game_benchmark(duration=60,label='Libre',process_name=FORTNITE_PROCESS):
+    status=presentmon_status()
+    if not status['installed']:raise RuntimeError('Moteur PresentMon absent. Installe-le depuis l’écran Jeux.')
+    duration=int(duration)
+    if duration not in (30,60,90,120,180):raise ValueError('Durée de benchmark non autorisée.')
+    process=game_process_running(process_name)
+    if not process['running']:raise RuntimeError('Fortnite n’est pas lancé. Ouvre le jeu et entre dans une partie avant de démarrer le benchmark.')
+    if not is_admin():raise PermissionError('Pour une capture ETW fiable, relance Acolyte avec « Exécuter en tant qu’administrateur ».')
+    BENCH_DATA_DIR.mkdir(parents=True,exist_ok=True)
+    stamp=time.strftime('%Y%m%d-%H%M%S')
+    csv_path=BENCH_DATA_DIR/f'fortnite-{stamp}.csv'
+    args=[
+        str(PRESENTMON_EXE),'--process_name',process_name,'--output_file',str(csv_path),
+        '--timed',str(duration),'--terminate_after_timed','--terminate_on_proc_exit',
+        '--stop_existing_session','--session_name','AcolyteFortniteBenchmark',
+        '--v1_metrics','--exclude_dropped','--no_track_gpu','--no_track_input','--no_console_stats'
+    ]
+    cpu_samples=[];ram_samples=[]
+    flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
+    proc=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',creationflags=flags)
+    try:
+        import psutil
+        while proc.poll() is None:
+            cpu_samples.append(float(psutil.cpu_percent(interval=0.4)))
+            ram_samples.append(float(psutil.virtual_memory().percent))
+    except Exception:
+        try:proc.wait(timeout=duration+20)
+        except subprocess.TimeoutExpired:
+            proc.kill();raise RuntimeError('PresentMon n’a pas terminé la capture.')
+    try:out,err=proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill();out,err=proc.communicate()
+    if proc.returncode not in (0,None):
+        raise RuntimeError('PresentMon a échoué : '+(err or out or str(proc.returncode))[-1200:])
+    if not csv_path.exists():raise RuntimeError('PresentMon n’a créé aucun fichier CSV. Vérifie que Fortnite était réellement en rendu 3D pendant la capture.')
+    result=_parse_presentmon_csv(csv_path)
+    result.update({
+        'timestamp':time.strftime('%Y-%m-%d %H:%M:%S'),'label':str(label)[:40],
+        'requested_seconds':duration,'process_name':process_name,'csv_path':str(csv_path),
+        'cpu_avg_percent':statistics.mean(cpu_samples) if cpu_samples else None,
+        'cpu_max_percent':max(cpu_samples) if cpu_samples else None,
+        'ram_avg_percent':statistics.mean(ram_samples) if ram_samples else None,
+        'engine_version':status.get('version','inconnue')
+    })
+    rows=_benchmark_history_read();rows.append(result);_benchmark_history_write(rows)
+    return result
+
+def compare_game_benchmarks(before,after):
+    keys=('avg_fps','one_percent_low','point_one_percent_low')
+    delta={}
+    for key in keys:
+        a=float(before.get(key) or 0);b=float(after.get(key) or 0)
+        delta[key]={'before':a,'after':b,'delta':b-a,'percent':((b-a)/a*100) if a else None}
+    fa=float(before.get('avg_frametime_ms') or 0);fb=float(after.get('avg_frametime_ms') or 0)
+    delta['avg_frametime_ms']={'before':fa,'after':fb,'delta':fb-fa,'percent':((fb-fa)/fa*100) if fa else None}
+    return delta
