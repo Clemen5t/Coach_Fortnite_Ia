@@ -279,6 +279,7 @@ class PCPremiumUI:
         self.ring=ScoreRing(side,150,COLORS['panel']);self.ring.pack(pady=(0,2))
         self.score_state=ctk.CTkLabel(side,text='Scan en cours…',text_color=COLORS['cyan'],font=ctk.CTkFont(size=13,weight='bold'))
         self.score_state.pack()
+        ctk.CTkLabel(side,text='État/configuration • pas la puissance matérielle',text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250).pack(pady=(2,0))
         self.scan_progress=ctk.CTkProgressBar(side,height=8,corner_radius=999,progress_color=COLORS['cyan2'],fg_color='#263758')
         self.scan_progress.pack(fill='x',padx=22,pady=(10,2));self.scan_progress.set(0)
         ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=14)
@@ -555,9 +556,10 @@ class PCPremiumUI:
         ctk.CTkFrame(card,height=6,fg_color='transparent').pack()
 
     def _page_checkup(self):
-        self._hero('Check-up système','Espace disque et fichiers temporaires. Le nettoyage ne touche qu’au TEMP utilisateur ancien de plus de 7 jours.',COLORS['success'])
-        self._action_card('Analyse entretien','Compte les temporaires et vérifie l’espace libre des disques.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('checkup'),button='ANALYSER')
-        self._action_card('Nettoyage prudent','Supprime uniquement les fichiers temporaires utilisateur anciens et non verrouillés.','Action locale','Faible','Faible',command=self.cleanup_temp,button='NETTOYER')
+        self._hero('Check-up système','Santé Windows, stockage, fichiers temporaires et caches. Le mode cache reste volontairement prudent pour ne pas provoquer de recompilation shaders ou de stutters.',COLORS['success'])
+        self._action_card('Analyse entretien','Compte les temporaires, vérifie l’espace libre et alimente le score Santé du PC.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('checkup'),button='ANALYSER')
+        self._action_card('Vider le cache Windows','Nettoie les fichiers TEMP de plus de 24 h, vide le cache DNS et tente de purger le cache Delivery Optimization. Le cache shaders DirectX est conservé.','Action locale','Faible','Faible',command=self.clear_windows_cache,button='VIDER LE CACHE')
+        self._action_card('Nettoyage prudent TEMP','Supprime uniquement les fichiers temporaires utilisateur anciens de plus de 7 jours et non verrouillés.','Action locale','Faible','Faible',command=self.cleanup_temp,button='NETTOYER TEMP')
 
     def _page_bios(self):
         self._hero('BIOS / RAM','Diagnostic uniquement : vitesse RAM configurée, profil mémoire à vérifier, UEFI et virtualisation.',COLORS['warning'])
@@ -608,19 +610,29 @@ class PCPremiumUI:
         self.kpis['ram'][1].configure(text='Utilisation live en cours')
         self.kpis['net'][1].configure(text=str(network.get('name') or system.get('nic') or 'Interface active'))
         score=int(data.get('score',0));self.ring.set_score(score)
-        state='EXCELLENT' if score>=90 else 'BON ÉTAT' if score>=75 else 'À OPTIMISER' if score>=60 else 'ATTENTION'
-        self.score_state.configure(text=state,text_color=COLORS['success'] if score>=85 else COLORS['cyan'] if score>=70 else COLORS['warning'])
+        state='EXCELLENT' if score>=90 else 'BON ÉTAT' if score>=80 else 'À OPTIMISER' if score>=65 else 'ATTENTION'
+        self.score_state.configure(text=state,text_color=COLORS['success'] if score>=90 else COLORS['cyan'] if score>=80 else COLORS['warning'])
         self._render_recos(data.get('recommendations',[]))
         opts=set(pc_optimizer.recommended_options(data))
         for key in ('game','captures','balanced'):self.option_vars[key].set(key in opts)
         games=data.get('games') or [];startup=data.get('startup_count')
-        self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nGPU : {system.get('gpu','?')}\nRéseau : {network.get('link','?')}")
+        breakdown=data.get('score_breakdown') or {}
+        mini=' • '.join(f"{k.split()[0]} {v}" for k,v in list(breakdown.items())[:3])
+        self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nScore : {score}/100\n{mini}\nRéseau : {network.get('link','?')}")
         self._set_text(self.summary_text,self._scan_summary(data))
         self._set_text(self.details_text,json.dumps(data,ensure_ascii=False,indent=2))
         if self.current=='dashboard':self.show('dashboard')
 
     def _scan_summary(self,data):
-        lines=[f"Score configuration : {data.get('score',0)}/100",'']
+        lines=[f"Score Santé du PC : {data.get('score',0)}/100",
+               data.get('score_note','Le score mesure l’état/configuration, pas la puissance du matériel.'),'']
+        maximums={'Sécurité Windows':25,'Performances gaming':30,'Stockage / entretien':20,'Démarrage':10,'Réseau':10,'État Windows':5}
+        breakdown=data.get('score_breakdown') or {}
+        if breakdown:
+            lines.append('DÉTAIL DU SCORE')
+            for key,maxv in maximums.items():
+                if key in breakdown:lines.append(f"• {key} : {breakdown[key]}/{maxv}")
+            lines.append('')
         for x in data.get('positives',[]):lines.append('✓ '+x)
         for x in data.get('recommendations',[]):lines.append('! '+x.get('title','')+' — '+x.get('detail',''))
         return '\n'.join(lines)
@@ -681,6 +693,25 @@ class PCPremiumUI:
     def cleanup_temp(self):
         if not messagebox.askyesno('Nettoyage prudent','Supprimer uniquement les fichiers TEMP utilisateur vieux de plus de 7 jours ?'):return
         self._run('Nettoyage TEMP',lambda:pc_optimizer.cleanup_temp(7),lambda x:self._show_result('Check-up',x))
+
+    def clear_windows_cache(self):
+        if self.busy:return
+        if not messagebox.askyesno('Vider le cache Windows',
+            'Acolyte va :\n\n'
+            '• supprimer les fichiers TEMP utilisateur de plus de 24 h\n'
+            '• vider le cache DNS Windows\n'
+            '• tenter de vider le cache Delivery Optimization\n\n'
+            'Le cache shaders DirectX et la mémoire standby seront conservés pour éviter des stutters ou des rechargements inutiles.\n\n'
+            'Fortnite doit être fermé. Continuer ?'):return
+        self._run('Vidage du cache Windows',pc_optimizer.clear_windows_cache,self._cache_done)
+
+    def _cache_done(self,result):
+        self._show_result('Cache Windows',result)
+        try:
+            freed=float(result.get('freed_temp_mb') or 0)
+            messagebox.showinfo('Cache Windows',f'Nettoyage terminé.\n\nEspace TEMP libéré : {freed:.1f} Mo\nCache DNS : '+('vidé' if result.get('dns_flushed') else 'non vidé')+'\nCache shaders DirectX : conservé')
+        except Exception:pass
+        self.parent.after(250,self.scan_full)
 
     def load_startup(self):
         self._run('Démarrage',pc_optimizer.startup_items,self._render_startup)
