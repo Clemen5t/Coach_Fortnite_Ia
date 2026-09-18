@@ -110,6 +110,9 @@ REG_SETTINGS = {
     'game_allow': (r'Software\Microsoft\GameBar', 'AllowAutoGameMode'),
     'capture': (r'Software\Microsoft\Windows\CurrentVersion\GameDVR', 'AppCaptureEnabled'),
     'dvr': (r'System\GameConfigStore', 'GameDVR_Enabled'),
+    'ads': (r'Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo', 'Enabled'),
+    'suggestions': (r'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SystemPaneSuggestionsEnabled'),
+    'suggestions_2': (r'Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-338388Enabled'),
 }
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 BALANCED = '381b4222-f694-41f0-9685-ff5bb260df2e'
@@ -122,6 +125,8 @@ OPTIONS = {
     'captures': ('Désactiver les captures Xbox Game Bar', 'Désactive les captures Game Bar ; aucun changement dans OBS.'),
     'balanced': ('Utiliser le plan Équilibré', 'Change le plan actif, sans modifier les fréquences CPU.'),
     'usb': ('Tester sans suspension USB sur secteur', 'Dépannage de déconnexions uniquement ; consommation potentiellement accrue.'),
+    'ads': ('Désactiver l’identifiant publicitaire Windows', 'Réglage de confidentialité du compte courant, entièrement restaurable.'),
+    'suggestions': ('Réduire les suggestions promotionnelles Windows', 'Désactive deux suggestions du compte courant, entièrement restaurables.'),
 }
 APP_CANDIDATES = {
     'Microsoft.BingNews': 'Actualités Microsoft',
@@ -312,6 +317,9 @@ def optimize(root, options=None, backend=None):
         dword('game_auto', 1);dword('game_allow', 1)
     if 'captures' in options:
         dword('capture', 0);dword('dvr', 0)
+    if 'ads' in options:dword('ads', 0)
+    if 'suggestions' in options:
+        dword('suggestions', 0);dword('suggestions_2', 0)
     if 'balanced' in options:changes.append(({'kind': 'power'}, BALANCED))
     if 'usb' in options:
         plan = BALANCED if 'balanced' in options else backend.read({'kind': 'power'})
@@ -372,12 +380,111 @@ def remove_app(root, package):
     return APP_CANDIDATES[package]+' désinstallé pour le compte courant.\nRéinstallation via Microsoft Store ; les données locales ne sont pas sauvegardées par Acolyte.'
 
 
+def network_diagnostics():
+    data=_strict_json("""$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select -First 1
+if($null -eq $nic){[ordered]@{status='Aucune interface réseau active'}}else{
+ $ip=Get-NetIPConfiguration -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
+ $rss=Get-NetAdapterRss -Name $nic.Name -ErrorAction SilentlyContinue
+ $rsc=Get-NetAdapterRsc -Name $nic.Name -ErrorAction SilentlyContinue
+ $pm=Get-NetAdapterPowerManagement -Name $nic.Name -ErrorAction SilentlyContinue
+ [ordered]@{
+  name=$nic.Name;description=$nic.InterfaceDescription;link=$nic.LinkSpeed
+  ipv4=(@($ip.IPv4Address.IPAddress)-join ', ');gateway=(@($ip.IPv4DefaultGateway.NextHop)-join ', ')
+  dns=(@($ip.DNSServer.ServerAddresses)-join ', ')
+  rss=$rss.Enabled;rsc_ipv4=$rsc.IPv4Enabled;rsc_ipv6=$rsc.IPv6Enabled
+  allow_power_off=$pm.AllowComputerToTurnOffDevice
+ }}""")
+    return 'Diagnostic réseau en lecture seule. Acolyte ne force aucun tweak réseau sans mesure.\n\n'+json.dumps(data,ensure_ascii=False,indent=2)
+
+def detected_games():
+    games=[]
+    manifests=Path(os.environ.get('ProgramData',r'C:\ProgramData'))/'Epic'/'EpicGamesLauncher'/'Data'/'Manifests'
+    if manifests.exists():
+        for path in manifests.glob('*.item'):
+            try:
+                data=json.loads(path.read_text(encoding='utf-8'))
+                name=str(data.get('DisplayName') or data.get('AppName') or '').strip()
+                loc=str(data.get('InstallLocation') or '').strip()
+                if name and loc:games.append({'launcher':'Epic Games','name':name,'path':loc})
+            except Exception:pass
+    # Jeux connus présents sans dépendre d'un launcher précis.
+    candidates=[
+        ('Fortnite',Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Epic Games'/'Fortnite'),
+        ('Fortnite',Path('C:/Program Files/Epic Games/Fortnite')),
+    ]
+    known={(g['name'].lower(),g['path'].lower()) for g in games}
+    for name,path in candidates:
+        if path.exists() and (name.lower(),str(path).lower()) not in known:
+            games.append({'launcher':'Détection locale','name':name,'path':str(path)})
+    return games
+
+def bios_diagnostics():
+    data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)
+$fw='Inconnu'
+try{$fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType}catch{}
+$virt=(Get-CimInstance Win32_Processor|Select -First 1 VirtualizationFirmwareEnabled,VMMonitorModeExtensions,SecondLevelAddressTranslationExtensions)
+[ordered]@{firmware=$fw;ram=$ram;virtualization=$virt}""")
+    rows=_rows(data.get('ram') if isinstance(data,dict) else None)
+    hint=[]
+    for row in rows:
+        try:
+            rated=int(row.get('Speed') or 0);configured=int(row.get('ConfiguredClockSpeed') or 0)
+            if rated and configured and rated>configured:
+                hint.append(f"RAM {row.get('PartNumber','')}: {configured} MT/s configurés pour {rated} MT/s annoncés. Vérifie EXPO/XMP dans le BIOS.")
+        except Exception:pass
+    note='\n'.join(hint) if hint else 'La vitesse déclarée par Windows ne suffit pas à confirmer EXPO/XMP ; vérifie le BIOS pour une confirmation.'
+    return note+'\n\n'+json.dumps(data,ensure_ascii=False,indent=2)
+
+def checkup():
+    temp=Path(os.environ.get('TEMP',Path.home()/'AppData'/'Local'/'Temp'))
+    count=0;size=0
+    try:
+        for p in temp.rglob('*'):
+            try:
+                if p.is_file():
+                    count+=1;size+=p.stat().st_size
+            except OSError:pass
+    except OSError:pass
+    disks=[]
+    try:
+        import shutil
+        for letter in ('C:/','D:/','E:/'):
+            if Path(letter).exists():
+                total,used,free=shutil.disk_usage(letter)
+                disks.append({'drive':letter,'free_gb':round(free/1024**3,1),'total_gb':round(total/1024**3,1)})
+    except Exception:pass
+    return {
+        'temp_files':count,'temp_size_mb':round(size/1024**2,1),'temp_path':str(temp),
+        'disks':disks,'note':'Le nettoyage proposé supprime seulement les fichiers temporaires utilisateur anciens de plus de 7 jours et ignore les fichiers verrouillés.'
+    }
+
+def cleanup_temp(days=7):
+    root=Path(os.environ.get('TEMP',Path.home()/'AppData'/'Local'/'Temp')).resolve()
+    cutoff=time.time()-max(1,int(days))*86400
+    removed=0;freed=0
+    for p in list(root.rglob('*')):
+        try:
+            if not p.is_file() or p.is_symlink():continue
+            rp=p.resolve()
+            if root not in rp.parents:continue
+            st=p.stat()
+            if st.st_mtime>cutoff:continue
+            size=st.st_size
+            p.unlink()
+            removed+=1;freed+=size
+        except (OSError,PermissionError):pass
+    return f"{removed} fichier(s) temporaire(s) anciens supprimés, {freed/1024**2:.1f} Mo libérés. Les fichiers récents/verrouillés ont été conservés."
+
 def diagnostics(category):
     scripts = {
         'ram': "@(Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)",
         'gpu': "@(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,DriverDate)",
         'usb': "@(Get-PnpDevice -Class USB -PresentOnly | Select-Object Status,FriendlyName)",
     }
+    if category == 'network':return network_diagnostics()
+    if category == 'games':return json.dumps(detected_games(),ensure_ascii=False,indent=2) if detected_games() else 'Aucun jeu détecté dans les manifests Epic/chemins connus.'
+    if category == 'bios':return bios_diagnostics()
+    if category == 'checkup':return json.dumps(checkup(),ensure_ascii=False,indent=2)
     if category == 'power':
         out, err, code = _run(['powercfg.exe', '/list'])
         if code:raise RuntimeError(err or out)
