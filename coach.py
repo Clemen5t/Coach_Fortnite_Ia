@@ -3,7 +3,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
 import updater
-import pc_optimizer
+try:
+    import pc_optimizer
+except ImportError:
+    pc_optimizer=None
 import json
 
 APP_DIR=Path(__file__).resolve().parent
@@ -202,6 +205,10 @@ class Coach:
 
     def build_pc_section(self,parent):
         wrap=tk.Frame(parent,bg=COLORS['bg']); wrap.pack(fill='both',expand=True,padx=22,pady=(0,12))
+        if pc_optimizer is None:
+            body=self.card(wrap,'OPTIMISATION PC','Module prêt à être installé après cette mise à jour de transition.',COLORS['cyan'],expand=True)
+            tk.Label(body,text='Étape 1 terminée : Acolyte a été rendu compatible avec le module PC.\nClique une seconde fois sur « Mettre à jour » après le redémarrage pour installer Optimisation PC.',bg=COLORS['panel'],fg=COLORS['text'],font=('Segoe UI',11,'bold'),wraplength=850,justify='left').pack(anchor='w',pady=20)
+            return
         top=self.card(wrap,'OPTIMISATION PC','Windows 11 • Ryzen X3D • Radeon RX 7000 • réseau gaming',COLORS['cyan'])
         self.pc_profile=tk.StringVar(value='Auto recommandé')
         combo=ttk.Combobox(top,textvariable=self.pc_profile,state='readonly',style='Dark.TCombobox',
