@@ -48,3 +48,11 @@ La capture écran, le microphone, la transcription, l'analyse Ollama et la synth
 `python -m unittest -v test_local_ai test_updater`
 
 Les tests couvrent le client Ollama local, la vision, le mode conversationnel, les filtres et le mécanisme de mise à jour. Le comportement réel du microphone, de Piper et les performances en jeu doivent être vérifiés sur Windows.
+
+## Correction 1.3.8 — benchmark réseau
+
+Le benchmark utilise désormais `ping.exe` de Windows, teste les destinations en parallèle et conserve une interface réactive. Les erreurs et absences de réponses affichent une mesure indisponible avec le diagnostic, jamais une latence fictive de 0 ms. Une absence de réponse ICMP ne prouve pas une panne Internet. Les durées inférieures à 1 ms sont comptées à leur borne supérieure de 1 ms ; le jitter nécessite au moins deux réponses.
+
+Installation : **Mettre à jour**, fermer puis relancer Acolyte, vérifier **1.3.8**, puis **Optimisation PC → Benchmark réseau**.
+
+Tests du benchmark et du fil de travail : `python -m unittest -v test_pc_optimizer test_updater`. Ces tests simulent les sorties Windows ; une vérification sur un PC Windows reste nécessaire.

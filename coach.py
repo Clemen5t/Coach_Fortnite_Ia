@@ -231,7 +231,9 @@ class Coach:
     def pc_job(self,label,func):
         self.pc_status.set(label+'…')
         def work():
-            try:self.root.after(0,lambda:self.pc_done(func()))
+            try:
+                result=func()
+                self.root.after(0,lambda result=result:self.pc_done(result))
             except Exception as e:self.root.after(0,lambda e=e:self.pc_error(str(e)))
         threading.Thread(target=work,daemon=True).start()
 
@@ -256,9 +258,7 @@ class Coach:
 
     def pc_benchmark(self):
         def work():
-            rows=pc_optimizer.benchmark(); lines=['BENCHMARK RÉSEAU']
-            for r in rows:lines.append(f"{r['host']} | moyenne {r['avg']:.1f} ms | min {r['min']:.1f} | max {r['max']:.1f} | jitter {r['jitter']:.1f} ms | pertes {r['loss']:.1f}%")
-            return '\n'.join(lines)
+            return pc_optimizer.format_benchmark(pc_optimizer.benchmark())
         self.pc_job('Benchmark réseau',work)
 
     def pc_optimize(self):
@@ -273,7 +273,7 @@ class Coach:
         self.pc_job('Optimisation du PC',work)
 
     def pc_format_bench(self,rows):
-        return '\n'.join(f"{r['host']} : {r['avg']:.1f} ms | jitter {r['jitter']:.1f} | pertes {r['loss']:.1f}%" for r in rows)
+        return pc_optimizer.format_benchmark(rows)
 
     def pc_restore(self):
         if not pc_optimizer.is_admin():messagebox.showinfo('Administrateur','Relance Acolyte en administrateur.');return
