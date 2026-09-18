@@ -49,7 +49,7 @@ for($i=0;$i -lt $sent;$i++){{
   Start-Sleep -Milliseconds 60
 }}
 $recv=$vals.Count
-if($recv -eq 0){{[ordered]@{{host='{host}';avg=0;min=0;max=0;jitter=0;loss=100;received=0}}}}
+if($recv -eq 0){{$result=[ordered]@{{host='{host}';avg=0;min=0;max=0;jitter=0;loss=100;received=0}}}}
 else{{
   $jit=0
   if($recv -gt 1){{
@@ -57,7 +57,7 @@ else{{
     for($i=1;$i -lt $recv;$i++){{$diff.Add([math]::Abs($vals[$i]-$vals[$i-1]))}}
     $jit=($diff|Measure-Object -Average).Average
   }}
-  [ordered]@{{
+  $result=[ordered]@{{
     host='{host}'
     avg=($vals|Measure-Object -Average).Average
     min=($vals|Measure-Object -Minimum).Minimum
@@ -67,7 +67,8 @@ else{{
     received=$recv
   }}
 }}
-$p.Dispose()"""
+$p.Dispose()
+$result"""
     data=_ps_json(script) or {'host':host,'avg':0,'min':0,'max':0,'jitter':0,'loss':100,'received':0}
     for k in ('avg','min','max','jitter','loss'):
         try:data[k]=float(data.get(k,0) or 0)
