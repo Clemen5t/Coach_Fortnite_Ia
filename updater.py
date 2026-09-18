@@ -18,6 +18,9 @@ FILES = {'coach.py','local_ai.py','pc_optimizer.py','updater.py','requirements.t
          'Installer-modele.bat','LIRE-MOI.txt','README.md','VERSION',
          'update-manifest.json','test_local_ai.py','test_updater.py','.gitignore'}
 REQUIRED = {'coach.py','local_ai.py','updater.py','requirements.txt','VERSION','update-manifest.json','Lancer.bat'}
+# Compatibilité : un ancien updater (<=1.2.6) ne connaît pas encore pc_optimizer.py.
+# Le bootstrap ci-dessous autorise uniquement ce nouveau module officiel lors de la transition.
+BOOTSTRAP_FILES = {'pc_optimizer.py'}
 LIMIT = 12 * 1024 * 1024
 
 def read_json(path, default=None):
@@ -70,7 +73,8 @@ def unpack(data):
             raise ValueError('Cette archive ne correspond pas à Coach Fortnite.')
         names=manifest.get('files')
         if not isinstance(names,list) or any(not isinstance(n,str) for n in names):raise ValueError('Liste de fichiers invalide.')
-        if len(names)!=len(set(names)) or not REQUIRED.issubset(names) or not set(names).issubset(FILES):
+        allowed=FILES|BOOTSTRAP_FILES
+        if len(names)!=len(set(names)) or not REQUIRED.issubset(names) or not set(names).issubset(allowed):
             raise ValueError('Fichiers de mise à jour non autorisés ou manquants.')
         result={}
         for name in names:
