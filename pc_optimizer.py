@@ -785,38 +785,144 @@ def _percentile(values,p):
     return values[lo]*(1-frac)+values[hi]*frac
 
 def _parse_presentmon_csv(path):
+    """Analyse uniquement le swapchain principal du jeu.
+    Les CSV PresentMon peuvent contenir plusieurs swapchains pour un même processus ;
+    mélanger leurs MsBetweenPresents fausse fortement les FPS.
+    """
     import csv
-    frames=[];application='';column=''
+    groups={}
+    application=''
+    frame_column=''
+    time_column=''
+    headers=[]
     with open(path,'r',encoding='utf-8-sig',errors='replace',newline='') as f:
         reader=csv.DictReader(f)
         headers=reader.fieldnames or []
-        for candidate in ('msBetweenPresents','MsBetweenPresents','FrameTime','MsBetweenDisplayChange','msBetweenDisplayChange'):
+        for candidate in ('msBetweenPresents','MsBetweenPresents','FrameTime','frameTime'):
             if candidate in headers:
-                column=candidate;break
-        if not column:raise RuntimeError('Colonne de frametime PresentMon introuvable : '+', '.join(headers[:20]))
+                frame_column=candidate;break
+        for candidate in ('TimeInSeconds','TimeInMs','CPUStartTime','CPUStartQPCTime'):
+            if candidate in headers:
+                time_column=candidate;break
+        if not frame_column:
+            raise RuntimeError('Colonne de frametime PresentMon introuvable : '+', '.join(headers[:25]))
         for row in reader:
             if not application:application=str(row.get('Application') or '')
-            try:value=float(str(row.get(column,'')).replace(',','.'))
-            except (TypeError,ValueError):continue
-            if 0.05<=value<=2000:frames.append(value)
-    if len(frames)<120:raise RuntimeError(f'Capture trop courte : seulement {len(frames)} images exploitables.')
-    # Conserve les vrais stutters ; seules les valeurs non valides sont écartées.
-    avg_ft=statistics.mean(frames)
-    p95=_percentile(frames,95);p99=_percentile(frames,99);p999=_percentile(frames,99.9)
-    fps_avg=1000.0/avg_ft if avg_ft else 0
-    low1=1000.0/p99 if p99 else 0
-    low01=1000.0/p999 if p999 else 0
-    median_ft=statistics.median(frames)
-    sample=frames if len(frames)<=360 else [frames[round(i*(len(frames)-1)/359)] for i in range(360)]
+            swap=str(row.get('SwapChainAddress') or 'unknown')
+            pid=str(row.get('ProcessID') or '')
+            key=(pid,swap)
+            try:
+                value=float(str(row.get(frame_column,'')).replace(',','.'))
+            except (TypeError,ValueError):
+                continue
+            if not 0.05<=value<=5000:
+                continue
+            timestamp=None
+            if time_column:
+                try:
+                    timestamp=float(str(row.get(time_column,'')).replace(',','.'))
+                    if time_column=='TimeInMs':timestamp/=1000.0
+                except (TypeError,ValueError):
+                    timestamp=None
+            groups.setdefault(key,[]).append((timestamp,value))
+
+    usable={k:v for k,v in groups.items() if len(v)>=120}
+    if not usable:
+        raise RuntimeError('Aucun swapchain PresentMon ne contient assez de frames exploitables.')
+
+    # Le swapchain principal est celui qui a présenté le plus de frames pendant la capture.
+    # C'est essentiel pour les jeux qui créent plusieurs surfaces/swapchains.
+    selected_key,rows=max(usable.items(),key=lambda kv:len(kv[1]))
+    rows=list(rows)
+
+    # Retire uniquement les bords de capture (pas les stutters internes).
+    timed=[r for r in rows if r[0] is not None]
+    boundary_trimmed=0
+    if len(timed)>=120:
+        t0=min(x[0] for x in timed);t1=max(x[0] for x in timed)
+        # Les premières/dernières centaines de ms peuvent contenir le changement de focus
+        # ou un intervalle entamé avant le démarrage de la capture.
+        low=t0+0.75
+        high=t1-0.25
+        trimmed=[r for r in rows if r[0] is not None and low<=r[0]<=high]
+        if len(trimmed)>=120:
+            boundary_trimmed=len(rows)-len(trimmed);rows=trimmed
+    elif len(rows)>140:
+        boundary_trimmed=10
+        rows=rows[5:-5]
+
+    raw_values=[float(v) for _,v in rows]
+    if len(raw_values)<120:
+        raise RuntimeError(f'Capture trop courte après nettoyage : {len(raw_values)} images exploitables.')
+
+    median_ft=statistics.median(raw_values)
+    raw_worst=max(raw_values)
+
+    # Les versions modernes de PresentMon ont eu des signalements d'énormes pics ETW
+    # à très haut FPS (>~400). On ne masque jamais un stutter normal : uniquement un
+    # pic extrême, isolé, entouré de frames revenues immédiatement au niveau normal.
+    # Chaque suppression est comptée et signalée dans le résultat.
+    values=[]
+    artifact_spikes=0
+    if median_ft<3.5 and len(raw_values)>=5:
+        normal_limit=max(12.0,median_ft*6.0)
+        artifact_limit=max(120.0,median_ft*50.0)
+        for i,v in enumerate(raw_values):
+            if 0<i<len(raw_values)-1 and v>=artifact_limit:
+                before=raw_values[i-1];after=raw_values[i+1]
+                if before<=normal_limit and after<=normal_limit:
+                    artifact_spikes+=1
+                    continue
+            values.append(v)
+    else:
+        values=raw_values
+
+    if len(values)<120:
+        raise RuntimeError('Trop peu de frames après validation de la capture.')
+
+    # FPS moyen = nombre d'images / temps total, équivalent à 1000 / frametime moyen
+    # sur un seul swapchain.
+    avg_ft=statistics.mean(values)
+    fps_values=[1000.0/x for x in values if x>0]
+    fps_avg=1000.0/avg_ft if avg_ft else 0.0
+
+    # Même convention que les métriques FPS percentiles modernes de PresentMon :
+    # P1 FPS = 1% des frames sont à cette valeur ou moins.
+    low1=_percentile(fps_values,1.0)
+    low01=_percentile(fps_values,0.1)
+
+    p95=_percentile(values,95)
+    p99=_percentile(values,99)
+    p999=_percentile(values,99.9)
+    median_ft=statistics.median(values)
+    sample=values if len(values)<=360 else [values[round(i*(len(values)-1)/359)] for i in range(360)]
+
+    warnings=[]
+    if len(usable)>1:
+        warnings.append(f'{len(usable)} swapchains détectés ; Acolyte a sélectionné automatiquement le swapchain principal ({selected_key[1]}).')
+    if boundary_trimmed:
+        warnings.append(f'{boundary_trimmed} frame(s) de bord de capture ignorée(s).')
+    if artifact_spikes:
+        warnings.append(f'{artifact_spikes} pic(s) ETW extrême(s) isolé(s) filtré(s) à très haut FPS ; pire valeur brute {raw_worst:.1f} ms.')
+    if low1 is not None and low1>fps_avg*1.08:
+        warnings.append('Le 1% low dépasse anormalement la moyenne : la capture reste suspecte et doit être répétée.')
+
     return {
-        'application':application,'frame_column':column,'frames':len(frames),
-        'duration_seconds':sum(frames)/1000.0,
+        'application':application,'frame_column':frame_column,
+        'process_id':selected_key[0],'swapchain':selected_key[1],
+        'swapchains_detected':len(usable),
+        'frames':len(values),'raw_frames':len(raw_values),
+        'duration_seconds':sum(values)/1000.0,
         'avg_fps':fps_avg,'median_fps':1000.0/median_ft if median_ft else 0,
-        'one_percent_low':low1,'point_one_percent_low':low01,
+        'one_percent_low':low1 or 0.0,'point_one_percent_low':low01 or 0.0,
         'avg_frametime_ms':avg_ft,'p95_frametime_ms':p95,'p99_frametime_ms':p99,
-        'p999_frametime_ms':p999,'worst_frametime_ms':max(frames),
-        'stutters_33ms':sum(1 for x in frames if x>33.333),
-        'stutters_50ms':sum(1 for x in frames if x>50),
+        'p999_frametime_ms':p999,'worst_frametime_ms':max(values),
+        'raw_worst_frametime_ms':raw_worst,
+        'stutters_33ms':sum(1 for x in values if x>33.333),
+        'stutters_50ms':sum(1 for x in values if x>50),
+        'artifact_spikes_filtered':artifact_spikes,
+        'boundary_frames_trimmed':boundary_trimmed,
+        'capture_warnings':warnings,
         'frametime_sample':sample
     }
 
