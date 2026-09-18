@@ -3,6 +3,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
 import updater
+import pc_optimizer
+import json
 
 APP_DIR=Path(__file__).resolve().parent
 DEFAULT_REPO='Clemen5t/Coach_Fortnite_Ia'
@@ -168,7 +170,13 @@ class Coach:
 
         shell=tk.Frame(root,bg=COLORS['bg']); shell.pack(fill='both',expand=True)
         self.build_header(shell)
-        content=tk.Frame(shell,bg=COLORS['bg']); content.pack(fill='both',expand=True,padx=22,pady=(0,12))
+        nav=tk.Frame(shell,bg=COLORS['bg']); nav.pack(fill='x',padx=22,pady=(0,10))
+        ttk.Button(nav,text='🎮  COACH FORTNITE',command=lambda:self.show_section('coach'),style='Primary.TButton').pack(side='left')
+        ttk.Button(nav,text='⚡  OPTIMISATION PC',command=lambda:self.show_section('pc'),style='Cyan.TButton').pack(side='left',padx=8)
+
+        self.section_host=tk.Frame(shell,bg=COLORS['bg']); self.section_host.pack(fill='both',expand=True)
+        self.coach_section=tk.Frame(self.section_host,bg=COLORS['bg'])
+        content=tk.Frame(self.coach_section,bg=COLORS['bg']); content.pack(fill='both',expand=True,padx=22,pady=(0,12))
         content.grid_columnconfigure(0,weight=3,uniform='main'); content.grid_columnconfigure(1,weight=2,uniform='main')
         content.grid_rowconfigure(0,weight=1)
         left=tk.Frame(content,bg=COLORS['bg']); left.grid(row=0,column=0,sticky='nsew',padx=(0,8))
@@ -180,10 +188,90 @@ class Coach:
         self.build_auto_card(right)
         self.build_context_card(right)
         self.build_system_card(right)
+        self.pc_section=tk.Frame(self.section_host,bg=COLORS['bg'])
+        self.build_pc_section(self.pc_section)
+        self.show_section('coach')
         self.build_footer(shell)
 
         self.refresh_microphones(initial=True)
         self.install_hotkey(); root.protocol('WM_DELETE_WINDOW',self.close); root.after(50,self.poll)
+
+    def show_section(self,name):
+        for frame in (self.coach_section,self.pc_section):frame.pack_forget()
+        (self.pc_section if name=='pc' else self.coach_section).pack(fill='both',expand=True)
+
+    def build_pc_section(self,parent):
+        wrap=tk.Frame(parent,bg=COLORS['bg']); wrap.pack(fill='both',expand=True,padx=22,pady=(0,12))
+        top=self.card(wrap,'OPTIMISATION PC','Windows 11 • Ryzen X3D • Radeon RX 7000 • réseau gaming',COLORS['cyan'])
+        self.pc_profile=tk.StringVar(value='Auto recommandé')
+        combo=ttk.Combobox(top,textvariable=self.pc_profile,state='readonly',style='Dark.TCombobox',
+            values=('Auto recommandé','Compétitif / latence minimale','Équilibré / stabilité'),width=34)
+        combo.pack(side='left')
+        ttk.Button(top,text='Analyser',command=self.pc_analyze,style='Ghost.TButton').pack(side='left',padx=6)
+        ttk.Button(top,text='Benchmark réseau',command=self.pc_benchmark,style='Cyan.TButton').pack(side='left',padx=6)
+        ttk.Button(top,text='OPTIMISER TOUT',command=self.pc_optimize,style='Primary.TButton').pack(side='left',padx=6)
+        ttk.Button(top,text='Restaurer',command=self.pc_restore,style='Danger.TButton').pack(side='left',padx=6)
+        body=self.card(wrap,'DIAGNOSTIC & RÉSULTATS','Les opérations lourdes sont lancées hors du thread de l’interface.',COLORS['purple'],expand=True,pady=(0,0))
+        self.pc_status=tk.StringVar(value='Prêt. Clique sur Analyser.')
+        tk.Label(body,textvariable=self.pc_status,bg=COLORS['panel'],fg=COLORS['cyan'],font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(0,8))
+        self.pc_output=tk.Text(body,wrap='word',bg=COLORS['log'],fg='#dbeafe',relief='flat',font=('Consolas',10),padx=12,pady=10)
+        self.pc_output.pack(fill='both',expand=True)
+        self.pc_output.insert('end','Acolyte PC est intégré au Coach Fortnite.\nAucun second EXE à installer.\n')
+
+    def pc_write(self,text):
+        self.pc_output.delete('1.0','end'); self.pc_output.insert('end',text); self.pc_output.see('end')
+
+    def pc_job(self,label,func):
+        self.pc_status.set(label+'…')
+        def work():
+            try:self.root.after(0,lambda:self.pc_done(func()))
+            except Exception as e:self.root.after(0,lambda e=e:self.pc_error(str(e)))
+        threading.Thread(target=work,daemon=True).start()
+
+    def pc_done(self,result):
+        self.pc_status.set('Terminé.')
+        if isinstance(result,str):self.pc_write(result)
+        else:self.pc_write(json.dumps(result,ensure_ascii=False,indent=2))
+
+    def pc_error(self,error):
+        self.pc_status.set('Erreur : '+error); messagebox.showerror('Optimisation PC',error)
+
+    def pc_analyze(self):
+        def work():
+            d=pc_optimizer.analyze()
+            return '\n'.join([
+                'CPU : '+str(d.get('cpu','?')),'GPU : '+str(d.get('gpu','?')),
+                'RAM : '+str(d.get('ram','?'))+' Go','Carte mère : '+str(d.get('board','?')),
+                'BIOS : '+str(d.get('bios','?')),'Windows : '+str(d.get('windows','?'))+' build '+str(d.get('build','?')),
+                'Réseau : '+str(d.get('nic','?'))+' — '+str(d.get('nic_desc','?'))+' — '+str(d.get('link','?')),
+                'Administrateur : '+('oui' if d.get('admin') else 'non')])
+        self.pc_job('Analyse du PC',work)
+
+    def pc_benchmark(self):
+        def work():
+            rows=pc_optimizer.benchmark(); lines=['BENCHMARK RÉSEAU']
+            for r in rows:lines.append(f"{r['host']} | moyenne {r['avg']:.1f} ms | min {r['min']:.1f} | max {r['max']:.1f} | jitter {r['jitter']:.1f} ms | pertes {r['loss']:.1f}%")
+            return '\n'.join(lines)
+        self.pc_job('Benchmark réseau',work)
+
+    def pc_optimize(self):
+        if not pc_optimizer.is_admin():
+            messagebox.showinfo('Administrateur',"Ferme Acolyte puis relance son raccourci avec « Exécuter en tant qu’administrateur » pour appliquer les optimisations.")
+            return
+        profile=self.pc_profile.get()
+        if not messagebox.askyesno('Optimisation PC','Une sauvegarde sera créée avant les changements.\n\nAppliquer le profil '+profile+' ?'):return
+        def work():
+            before=pc_optimizer.benchmark(); result=pc_optimizer.optimize(APP_DIR,profile); after=pc_optimizer.benchmark()
+            return 'Profil appliqué : '+profile+'\nSauvegarde : '+result['backup']+'\n\nAVANT\n'+self.pc_format_bench(before)+'\n\nAPRÈS\n'+self.pc_format_bench(after)+'\n\nRedémarrage Windows conseillé.'
+        self.pc_job('Optimisation du PC',work)
+
+    def pc_format_bench(self,rows):
+        return '\n'.join(f"{r['host']} : {r['avg']:.1f} ms | jitter {r['jitter']:.1f} | pertes {r['loss']:.1f}%" for r in rows)
+
+    def pc_restore(self):
+        if not pc_optimizer.is_admin():messagebox.showinfo('Administrateur','Relance Acolyte en administrateur.');return
+        if not messagebox.askyesno('Restaurer','Restaurer les paramètres sauvegardés par Acolyte PC ?'):return
+        self.pc_job('Restauration',lambda:(pc_optimizer.restore(APP_DIR) and 'Paramètres restaurés. Redémarre Windows pour finaliser.'))
 
     def build_theme(self):
         style=ttk.Style()
