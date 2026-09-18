@@ -508,6 +508,7 @@ LINKS = {
     'intel': 'https://www.intel.com/content/www/us/en/support/detect.html',
     'board': 'https://www.msi.com/Motherboard/B650-GAMING-PLUS-WIFI/support',
     'store': 'ms-windows-store://home',
+    'privacy': 'ms-settings:privacy-general',
 }
 
 
