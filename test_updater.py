@@ -3,7 +3,8 @@ from pathlib import Path
 from unittest.mock import patch
 import updater
 
-    files={name:b'# valid\\n' for name in updater.REQUIRED}
+def archive(extra=None):
+    files={name:b'# valid\n' for name in updater.REQUIRED}
     files['VERSION']=b'0.3.1\n'
     manifest={'app_id':updater.APP_ID,'schema':1,'files':list(files)}
     if extra:manifest['files'].append(extra)
