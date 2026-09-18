@@ -204,31 +204,98 @@ class Coach:
         (self.pc_section if name=='pc' else self.coach_section).pack(fill='both',expand=True)
 
     def build_pc_section(self,parent):
-        wrap=tk.Frame(parent,bg=COLORS['bg']); wrap.pack(fill='both',expand=True,padx=22,pady=(0,12))
+        wrap=tk.Frame(parent,bg=COLORS['bg']);wrap.pack(fill='both',expand=True,padx=22,pady=(0,12))
         if pc_optimizer is None:
-            body=self.card(wrap,'OPTIMISATION PC','Module prêt à être installé après cette mise à jour de transition.',COLORS['cyan'],expand=True)
-            tk.Label(body,text='Étape 1 terminée : Acolyte a été rendu compatible avec le module PC.\nClique une seconde fois sur « Mettre à jour » après le redémarrage pour installer Optimisation PC.',bg=COLORS['panel'],fg=COLORS['text'],font=('Segoe UI',11,'bold'),wraplength=850,justify='left').pack(anchor='w',pady=20)
+            tk.Label(wrap,text='Module PC absent. Relance Acolyte après sa mise à jour.',bg=COLORS['bg'],fg=COLORS['text']).pack()
             return
-        top=self.card(wrap,'OPTIMISATION PC','Windows 11 • Ryzen X3D • Radeon RX 7000 • réseau gaming',COLORS['cyan'])
-        self.pc_profile=tk.StringVar(value='Auto recommandé')
-        combo=ttk.Combobox(top,textvariable=self.pc_profile,state='readonly',style='Dark.TCombobox',
-            values=('Auto recommandé','Compétitif / latence minimale','Équilibré / stabilité'),width=34)
-        combo.pack(side='left')
-        ttk.Button(top,text='Analyser',command=self.pc_analyze,style='Ghost.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='Benchmark réseau',command=self.pc_benchmark,style='Cyan.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='OPTIMISER TOUT',command=self.pc_optimize,style='Primary.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='Restaurer',command=self.pc_restore,style='Danger.TButton').pack(side='left',padx=6)
-        body=self.card(wrap,'DIAGNOSTIC & RÉSULTATS','Les opérations lourdes sont lancées hors du thread de l’interface.',COLORS['purple'],expand=True,pady=(0,0))
-        self.pc_status=tk.StringVar(value='Prêt. Clique sur Analyser.')
-        tk.Label(body,textvariable=self.pc_status,bg=COLORS['panel'],fg=COLORS['cyan'],font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(0,8))
-        self.pc_output=tk.Text(body,wrap='word',bg=COLORS['log'],fg='#dbeafe',relief='flat',font=('Consolas',10),padx=12,pady=10)
-        self.pc_output.pack(fill='both',expand=True)
-        self.pc_output.insert('end','Acolyte PC est intégré au Coach Fortnite.\nAucun second EXE à installer.\n')
+        self.pc_busy=False;self.pc_rows=[];self.pc_category='windows'
+        self.pc_options={key:tk.BooleanVar(value=key=='game') for key in pc_optimizer.OPTIONS}
+        toolbar=tk.Frame(wrap,bg=COLORS['bg']);toolbar.pack(fill='x',pady=(0,8))
+        for label,command,style in [('Analyser le PC',self.pc_analyze,'Ghost.TButton'),('Benchmark réseau',self.pc_benchmark,'Cyan.TButton'),('Appliquer la sélection',self.pc_optimize,'Primary.TButton'),('Restaurer',self.pc_restore,'Danger.TButton')]:
+            ttk.Button(toolbar,text=label,command=command,style=style).pack(side='left',padx=(0,6))
+        grid=tk.Frame(wrap,bg=COLORS['bg']);grid.pack(fill='x')
+        categories=[('apps','LOGICIELS','Désinstallation au choix'),('startup','DÉMARRAGE','Applications du compte'),('updates','MISES À JOUR','Windows et pilotes officiels'),('ram','MÉMOIRE RAM','Diagnostic et guide EXPO/XMP'),('gpu','CARTE GRAPHIQUE','Pilotes et réglages guidés'),('windows','WINDOWS','Mode Jeu et captures'),('usb','PÉRIPHÉRIQUES USB','Diagnostic et dépannage'),('power','ALIMENTATION','Plan actif et équilibre')]
+        for i,(key,title,subtitle) in enumerate(categories):
+            grid.grid_columnconfigure(i%4,weight=1,uniform='pc')
+            tk.Button(grid,text=title+'\n'+subtitle,command=lambda k=key:self.pc_select_category(k),bg=COLORS['panel2'],fg=COLORS['text'],activebackground=COLORS['purple'],activeforeground='white',relief='flat',font=('Segoe UI',10),padx=8,pady=12,wraplength=225).grid(row=i//4,column=i%4,sticky='nsew',padx=3,pady=3)
+        self.pc_detail=tk.Frame(wrap,bg=COLORS['panel']);self.pc_detail.pack(fill='x',pady=8)
+        self.pc_table=ttk.Treeview(wrap,columns=('name','detail'),show='headings',height=4,selectmode='browse')
+        self.pc_table.heading('name',text='Application');self.pc_table.heading('detail',text='Détail')
+        self.pc_table.column('name',width=240);self.pc_table.column('detail',width=650)
+        self.pc_status=tk.StringVar(value='Choisis une catégorie. Aucun réglage n’est appliqué automatiquement.')
+        tk.Label(wrap,textvariable=self.pc_status,bg=COLORS['bg'],fg=COLORS['cyan'],anchor='w',wraplength=1000).pack(fill='x',pady=5)
+        frame=tk.Frame(wrap,bg=COLORS['bg']);frame.pack(fill='both',expand=True)
+        self.pc_output=tk.Text(frame,height=6,wrap='word',bg=COLORS['log'],fg='#dbeafe',relief='flat',font=('Consolas',10),padx=12,pady=10)
+        scroll=ttk.Scrollbar(frame,command=self.pc_output.yview);scroll.pack(side='right',fill='y')
+        self.pc_output.configure(yscrollcommand=scroll.set);self.pc_output.pack(fill='both',expand=True)
+        self.pc_select_category('windows')
+        self.pc_write('Sélectionne les actions voulues puis clique sur Appliquer la sélection.\nLa sauvegarde initiale est conservée jusqu’à la restauration.\nLes désinstallations sont séparées et ne sont pas annulées par Restaurer.\nRAM/BIOS et pilotes : diagnostic et outils officiels, pas de modification automatique.')
+
+    def pc_select_category(self,category):
+        if self.pc_busy:return
+        self.pc_category=category;self.pc_rows=[]
+        self.pc_table.pack_forget()
+        for child in self.pc_table.get_children():self.pc_table.delete(child)
+        for child in self.pc_detail.winfo_children():child.destroy()
+        descriptions={
+            'apps':'Retire uniquement les applications que tu n’utilises pas. Les données locales peuvent être supprimées. Réinstallation via Microsoft Store.',
+            'startup':'Entrées du registre Run du compte actuel. Une entrée présente peut déjà être désactivée dans Windows. Les autres démarrages se gèrent dans les paramètres Windows.',
+            'updates':'Ouvre Windows Update ou le fabricant pour vérifier et installer les mises à jour. Acolyte ne déclare pas un pilote à jour sans vérification.',
+            'ram':'Lecture des barrettes et de leur vitesse configurée. EXPO/XMP se vérifie dans le BIOS ; aucun profil mémoire ni tension n’est modifié par Acolyte.',
+            'gpu':'Lis la version du pilote, puis utilise le panneau du fabricant pour les réglages. Aucun overclocking GPU automatique.',
+            'windows':'Réglages du compte courant, sauvegardés avant modification. Les captures Game Bar restent disponibles tant que leur désactivation n’est pas cochée.',
+            'usb':'La suspension USB reste activée par défaut. Désactive-la uniquement pour comparer en cas de déconnexions sur secteur ; aucun gain de latence n’est garanti.',
+            'power':'Choisis explicitement le plan Équilibré. L’ancien plan actif est conservé pour la restauration.'}
+        tk.Label(self.pc_detail,text=descriptions[category],bg=COLORS['panel'],fg=COLORS['text'],wraplength=980,justify='left',anchor='w',padx=10,pady=8).pack(fill='x')
+        choices={'windows':['game','captures'],'power':['balanced'],'usb':['usb']}.get(category,[])
+        for key in choices:
+            tk.Checkbutton(self.pc_detail,text=pc_optimizer.OPTIONS[key][0],variable=self.pc_options[key],bg=COLORS['panel'],fg=COLORS['text'],selectcolor=COLORS['panel3'],activebackground=COLORS['panel'],activeforeground=COLORS['text']).pack(anchor='w',padx=8)
+        actions={
+            'apps':[('Lister les applications proposées',lambda:self.pc_inventory('apps')),('Désinstaller la sélection',lambda:self.pc_item_action('apps')),('Toutes les applications',lambda:self.pc_open('apps')),('Microsoft Store',lambda:self.pc_open('store'))],
+            'startup':[('Lister les entrées',lambda:self.pc_inventory('startup')),('Retirer du démarrage',lambda:self.pc_item_action('startup')),('Démarrage Windows',lambda:self.pc_open('startup'))],
+            'updates':[('Windows Update',lambda:self.pc_open('updates')),('AMD / chipset',lambda:self.pc_open('amd')),('NVIDIA',lambda:self.pc_open('nvidia')),('Intel',lambda:self.pc_open('intel'))],
+            'ram':[('Analyser la RAM',lambda:self.pc_diagnostic('ram')),('Support MSI B650 Gaming Plus WiFi',lambda:self.pc_open('board'))],
+            'gpu':[('Lire les pilotes GPU',lambda:self.pc_diagnostic('gpu')),('Support AMD',lambda:self.pc_open('amd')),('Support NVIDIA',lambda:self.pc_open('nvidia')),('Graphiques Windows',lambda:self.pc_open('graphics'))],
+            'windows':[('Ouvrir le mode Jeu',lambda:self.pc_open('game'))],
+            'usb':[('Lister les périphériques USB',lambda:self.pc_diagnostic('usb'))],
+            'power':[('Voir les plans disponibles',lambda:self.pc_diagnostic('power')),('Alimentation Windows',lambda:self.pc_open('power'))]}
+        bar=tk.Frame(self.pc_detail,bg=COLORS['panel']);bar.pack(fill='x',padx=8,pady=7)
+        for label,command in actions[category]:ttk.Button(bar,text=label,command=command,style='Ghost.TButton').pack(side='left',padx=(0,5))
+        if category in ('apps','startup'):self.pc_table.pack(fill='x',after=self.pc_detail,pady=(0,5))
+
+    def pc_open(self,name):
+        if self.pc_busy:return
+        try:pc_optimizer.open_panel(name)
+        except Exception as exc:self.pc_error(str(exc))
+
+    def pc_inventory(self,category):
+        def work():
+            rows=pc_optimizer.removable_apps() if category=='apps' else pc_optimizer.startup_items()
+            return {'inventory':category,'rows':rows}
+        self.pc_job('Lecture des applications',work)
+
+    def pc_item_action(self,category):
+        if self.pc_busy:return
+        selection=self.pc_table.selection()
+        if not selection:messagebox.showinfo('Sélection','Sélectionne une application dans la liste.');return
+        item=self.pc_rows[int(selection[0])]
+        if category=='apps':
+            question='Désinstaller '+item['name']+' pour ton compte ?\nSes données locales peuvent être supprimées.\nRestaurer ne réinstalle pas cette application.'
+            action=lambda:pc_optimizer.remove_app(APP_DIR,item['package'])
+        else:
+            question='Retirer '+item['name']+' du démarrage automatique ?\nNe retire pas une protection de sécurité ou un utilitaire matériel nécessaire.\nLe programme restera installé ; Restaurer réactivera cette entrée.'
+            action=lambda:pc_optimizer.disable_startup(APP_DIR,item['name'])
+        if messagebox.askyesno('Confirmer l’action',question):self.pc_job('Modification',action)
+
+    def pc_diagnostic(self,category):
+        self.pc_job('Diagnostic '+category,lambda:pc_optimizer.diagnostics(category))
 
     def pc_write(self,text):
-        self.pc_output.delete('1.0','end'); self.pc_output.insert('end',text); self.pc_output.see('end')
+        self.pc_output.delete('1.0','end');self.pc_output.insert('end',text);self.pc_output.see('end')
 
     def pc_job(self,label,func):
+        if getattr(self,'pc_busy',False) or getattr(self,'updating',False):return
+        self.pc_busy=True
         self.pc_status.set(label+'…')
         def work():
             try:
@@ -238,12 +305,17 @@ class Coach:
         threading.Thread(target=work,daemon=True).start()
 
     def pc_done(self,result):
-        self.pc_status.set('Terminé.')
-        if isinstance(result,str):self.pc_write(result)
+        self.pc_busy=False;self.pc_status.set('Terminé.')
+        if isinstance(result,dict) and 'inventory' in result:
+            self.pc_rows=result['rows']
+            for child in self.pc_table.get_children():self.pc_table.delete(child)
+            for i,row in enumerate(self.pc_rows):self.pc_table.insert('', 'end',iid=str(i),values=(row['name'],row.get('command',row.get('package',''))))
+            self.pc_write(str(len(self.pc_rows))+' entrée(s). Sélectionne une ligne pour agir.\nLa liste des logiciels proposés est volontairement limitée aux applications facultatives reconnues. Pour le reste, utilise Toutes les applications.' if result['inventory']=='apps' else str(len(self.pc_rows))+' entrée(s) Run du compte courant. Les commandes affichées ne sont jamais exécutées par Acolyte.')
+        elif isinstance(result,str):self.pc_write(result)
         else:self.pc_write(json.dumps(result,ensure_ascii=False,indent=2))
 
     def pc_error(self,error):
-        self.pc_status.set('Erreur : '+error); messagebox.showerror('Optimisation PC',error)
+        self.pc_busy=False;self.pc_status.set('Erreur : '+error);messagebox.showerror('Optimisation PC',error)
 
     def pc_analyze(self):
         def work():
@@ -257,28 +329,22 @@ class Coach:
         self.pc_job('Analyse du PC',work)
 
     def pc_benchmark(self):
-        def work():
-            return pc_optimizer.format_benchmark(pc_optimizer.benchmark())
-        self.pc_job('Benchmark réseau',work)
+        self.pc_job('Benchmark réseau',lambda:pc_optimizer.format_benchmark(pc_optimizer.benchmark()))
 
     def pc_optimize(self):
-        if not pc_optimizer.is_admin():
-            messagebox.showinfo('Administrateur',"Ferme Acolyte puis relance son raccourci avec « Exécuter en tant qu’administrateur » pour appliquer les optimisations.")
-            return
-        profile=self.pc_profile.get()
-        if not messagebox.askyesno('Optimisation PC','Une sauvegarde sera créée avant les changements.\n\nAppliquer le profil '+profile+' ?'):return
-        def work():
-            before=pc_optimizer.benchmark(); result=pc_optimizer.optimize(APP_DIR,profile); after=pc_optimizer.benchmark()
-            return 'Profil appliqué : '+profile+'\nSauvegarde : '+result['backup']+'\n\nAVANT\n'+self.pc_format_bench(before)+'\n\nAPRÈS\n'+self.pc_format_bench(after)+'\n\nRedémarrage Windows conseillé.'
-        self.pc_job('Optimisation du PC',work)
+        if self.pc_busy:return
+        options=[key for key,var in self.pc_options.items() if var.get()]
+        if not options:messagebox.showinfo('Sélection','Coche au moins un réglage dans Windows, USB ou Alimentation.');return
+        details='\n'.join('• '+pc_optimizer.OPTIONS[key][0] for key in options)
+        if not messagebox.askyesno('Appliquer la sélection',details+'\n\nSauvegarde avant modification, puis vérification.\nRestaurer rétablit les valeurs sauvegardées.\nAppliquer ces changements ?'):return
+        self.pc_job('Application des réglages Windows',lambda:pc_optimizer.optimize(APP_DIR,options))
 
-    def pc_format_bench(self,rows):
-        return pc_optimizer.format_benchmark(rows)
+    def pc_format_bench(self,rows):return pc_optimizer.format_benchmark(rows)
 
     def pc_restore(self):
-        if not pc_optimizer.is_admin():messagebox.showinfo('Administrateur','Relance Acolyte en administrateur.');return
-        if not messagebox.askyesno('Restaurer','Restaurer les paramètres sauvegardés par Acolyte PC ?'):return
-        self.pc_job('Restauration',lambda:(pc_optimizer.restore(APP_DIR) and 'Paramètres restaurés. Redémarre Windows pour finaliser.'))
+        if self.pc_busy:return
+        if not messagebox.askyesno('Restaurer','Rétablir tous les réglages suivis depuis la sauvegarde initiale ?\nCela peut remplacer des modifications manuelles ultérieures de ces mêmes réglages.\nLes désinstallations et les réglages faits dans les outils externes sont exclus.'):return
+        self.pc_job('Restauration',lambda:pc_optimizer.restore(APP_DIR))
 
     def build_theme(self):
         style=ttk.Style()
@@ -571,6 +637,8 @@ class Coach:
             except Exception as e:messagebox.showerror('GitHub',str(e))
 
     def update_app(self):
+        if getattr(self,"pc_busy",False):
+            messagebox.showinfo("Mise à jour","Attends la fin de l’action PC avant de mettre à jour.");return
         if self.updating or self.voice_busy:return
         if self.worker and self.worker.is_alive():messagebox.showinfo('Mise à jour','Arrête d’abord l’analyse automatique.'); return
         config=updater.read_json(APP_DIR/'update-config.json',{}) or {'repo':DEFAULT_REPO,'branch':'main'}
@@ -660,6 +728,8 @@ class Coach:
         if self.client:threading.Thread(target=self.client.cancel,daemon=True).start()
 
     def close(self):
+        if getattr(self,"pc_busy",False):
+            messagebox.showinfo("Action en cours","Attends la fin de l’action PC avant de fermer Acolyte.");return
         self.save_preferences(); self.stop_event.set(); self.voice_stop.set()
         if self.hotkey_listener:
             try:self.hotkey_listener.stop()

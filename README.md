@@ -56,3 +56,41 @@ Le benchmark utilise désormais `ping.exe` de Windows, teste les destinations en
 Installation : **Mettre à jour**, fermer puis relancer Acolyte, vérifier **1.3.8**, puis **Optimisation PC → Benchmark réseau**.
 
 Tests du benchmark et du fil de travail : `python -m unittest -v test_pc_optimizer test_updater`. Ces tests simulent les sorties Windows ; une vérification sur un PC Windows reste nécessaire.
+
+## Centre d’optimisation Windows 1.4.0
+
+Huit catégories intégrées à Acolyte, inspirées des domaines présentés par FPSDoctor, avec une implémentation indépendante. Aucun réglage Fortnite n’est modifié.
+
+| Catégorie | Action disponible |
+| --- | --- |
+| Logiciels | Lister et désinstaller au choix Actualités, Météo, Solitaire, Conseils et Clipchamp lorsqu’ils sont présents et amovibles, pour le compte courant ; ouvrir les applications Windows pour le reste. |
+| Démarrage | Lister les entrées Run du compte courant, retirer une entrée sélectionnée, la rétablir avec Restaurer ; ouvrir Windows pour les autres sources de démarrage. |
+| Mises à jour | Ouvrir Windows Update et les sites officiels AMD, NVIDIA et Intel. La recherche et l’installation sont effectuées dans ces outils, pas automatiquement par Acolyte. |
+| RAM | Lire les barrettes et la vitesse configurée ; accéder au support MSI B650 Gaming Plus WiFi. EXPO/XMP reste à vérifier et configurer dans le BIOS selon le kit. |
+| GPU | Afficher les versions installées ; accéder aux outils officiels et aux paramètres graphiques Windows. Pas d’overclocking automatique. |
+| Windows | Appliquer au choix le mode Jeu et la désactivation des captures Game Bar. |
+| USB | Lister les périphériques ; test optionnel sans suspension sélective sur secteur uniquement. Désactivation non cochée par défaut. |
+| Alimentation | Voir les plans et sélectionner explicitement Équilibré, avec conservation de l’ancien plan. |
+
+### Utilisation
+
+1. Cliquer sur **Mettre à jour**, fermer puis relancer Acolyte et vérifier **1.4.0**.
+2. Ouvrir **Optimisation PC**, puis la catégorie voulue.
+3. Cocher les réglages désirés et cliquer sur **Appliquer la sélection**. La confirmation récapitule aussi les cases cochées dans les autres catégories.
+4. Les désinstallations et retraits du démarrage nécessitent une sélection de ligne et une confirmation distincte.
+5. **Restaurer** rétablit toutes les valeurs suivies depuis la sauvegarde initiale, y compris les entrées Run retirées. Fermer le jeu avant de comparer les changements.
+
+La sauvegarde atomique `pc-optimizer-state-v2.json` conserve la première valeur de chaque réglage, son type de registre et son absence éventuelle. Elle est liée au PC et au compte Windows. Les écritures sont vérifiées et annulées en cas d’échec ; une restauration incomplète conserve son journal pour réessayer. Un verrou empêche deux instances de modifier simultanément la sauvegarde. Les opérations PC empêchent temporairement la fermeture normale et la mise à jour de l’application.
+
+Les désinstallations peuvent supprimer des données locales : Restaurer ne les annule pas. Les actions effectuées manuellement dans Windows Update, AMD, NVIDIA, Intel ou le BIOS ne sont pas suivies. Si une sauvegarde de l’ancien optimiseur est présente, les nouveaux changements sont bloqués et l’ancien fichier est conservé : les paramètres manquants ne peuvent pas être reconstruits honnêtement.
+
+Aucun gain de FPS ou de ping n’est garanti. L’application ne force plus HAGS, les paramètres TCP, RSS ou les réglages avancés de la carte réseau. Elle ne désactive ni la sécurité Windows ni les mises à jour.
+
+### Validation et références
+
+Depuis un clone du dépôt : `python -m unittest -v test_windows_optimizer test_pc_optimizer test_updater`. Les deux tests PC sont destinés au développement et ne sont pas ajoutés au manifeste de mise à jour pour conserver la compatibilité avec l’updater 1.3.8. Les scénarios simulent Windows : vérification réelle sur Windows 11 nécessaire, notamment pour les pilotes et la disponibilité des réglages USB.
+
+- Catégories de référence : https://fpsdoctor.com/en
+- Commandes d’alimentation : https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/powercfg-command-line-options
+- Panneaux Windows : https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings
+- Microsoft déconseille de désactiver généralement la suspension USB : https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-selective-suspend

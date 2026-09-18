@@ -6,3 +6,6 @@ settings.json
 update-config.json
 *.tmp
 *.zip
+
+pc-optimizer*.json
+pc-optimizer.lock

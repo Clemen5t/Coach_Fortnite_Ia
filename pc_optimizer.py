@@ -5,13 +5,14 @@ from pathlib import Path
 
 BACKUP_NAME='pc-optimizer-backup.json'
 
-def _run(args, timeout=35):
-    p=subprocess.run(args,capture_output=True,text=True,errors="replace",timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+def _run(args, timeout=35, encoding=None):
+    p=subprocess.run(args,capture_output=True,text=True,encoding=encoding,errors="replace",timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     return (p.stdout or '').strip(),(p.stderr or '').strip(),p.returncode
 
 def _ps(script, timeout=40):
+    script='[Console]::OutputEncoding=[Text.Encoding]::UTF8; '+script
     encoded=__import__('base64').b64encode(script.encode('utf-16le')).decode()
-    return _run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',encoded],timeout)
+    return _run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',encoded],timeout,encoding='utf-8')
 
 def is_admin():
     try:return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -24,7 +25,7 @@ def _ps_json(script):
     except Exception:return None
 
 def analyze():
-    info=_ps_json("""$cpu=(Get-CimInstance Win32_Processor|Select -First 1 -Expand Name)
+    info=_strict_json("""$cpu=(Get-CimInstance Win32_Processor|Select -First 1 -Expand Name)
 $gpu=(Get-CimInstance Win32_VideoController|Select -Expand Name)-join ', '
 $board=(Get-CimInstance Win32_BaseBoard|Select -First 1 -Expand Product)
 $bios=(Get-CimInstance Win32_BIOS|Select -First 1 -Expand SMBIOSBIOSVersion)
@@ -98,62 +99,314 @@ def benchmark():
         return list(pool.map(ping,targets))
 
 
-def backup(root):
-    path=Path(root)/BACKUP_NAME
-    script="""$b=[ordered]@{}
-$b.power=(powercfg /getactivescheme|Out-String)
-$b.hags=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' -Name HwSchMode -ErrorAction SilentlyContinue).HwSchMode
-$b.game=(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\GameBar' -ErrorAction SilentlyContinue|Select AllowAutoGameMode,AutoGameModeEnabled)
-$b.dvr=(Get-ItemProperty 'HKCU:\\System\\GameConfigStore' -ErrorAction SilentlyContinue).GameDVR_Enabled
-$b.capture=(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR' -ErrorAction SilentlyContinue).AppCaptureEnabled
-$b.rss=@(Get-NetAdapterRss -ErrorAction SilentlyContinue|Select Name,Enabled)
-$b.rsc=@(Get-NetAdapterRsc -ErrorAction SilentlyContinue|Select Name,IPv4Enabled,IPv6Enabled)
-$b"""
-    data=_ps_json(script) or {}
-    path.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    return path
+# Réglages directs limités et documentés ; aucune optimisation réseau forcée.
+import contextlib
+import platform
+import threading
+import uuid
 
-def optimize(root, profile='Auto recommandé'):
-    if not is_admin():raise PermissionError("L'optimisation nécessite Acolyte lancé en administrateur.")
-    backup(root)
-    competitive='Compétitif' in profile
-    script="""New-Item 'HKCU:\\Software\\Microsoft\\GameBar' -Force|Out-Null
-Set-ItemProperty 'HKCU:\\Software\\Microsoft\\GameBar' AllowAutoGameMode 1 -Type DWord -Force
-Set-ItemProperty 'HKCU:\\Software\\Microsoft\\GameBar' AutoGameModeEnabled 1 -Type DWord -Force
-New-Item 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' -Force|Out-Null
-Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' HwSchMode 2 -Type DWord -Force
-New-Item 'HKCU:\\System\\GameConfigStore' -Force|Out-Null
-Set-ItemProperty 'HKCU:\\System\\GameConfigStore' GameDVR_Enabled 0 -Type DWord -Force
-New-Item 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR' -Force|Out-Null
-Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR' AppCaptureEnabled 0 -Type DWord -Force
-powercfg /setactive SCHEME_BALANCED|Out-Null
-netsh int tcp set global rss=enabled|Out-Null
-netsh int tcp set global autotuninglevel=normal|Out-Null
-Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|ForEach-Object{
- try{Enable-NetAdapterRss -Name $_.Name -ErrorAction Stop}catch{}
- try{Set-NetAdapterPowerManagement -Name $_.Name -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop}catch{}
- $p=Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue|Where-Object {$_.DisplayName -match 'Energy.Efficient|Green Ethernet|Gigabit Lite|Power Saving|Économie.*énergie'}
- foreach($x in $p){try{if($x.ValidDisplayValues -contains 'Disabled'){Set-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword $x.RegistryKeyword -DisplayValue 'Disabled' -NoRestart -ErrorAction Stop}}catch{}}
-}"""
-    out,err,code=_ps(script,60)
-    if code:raise RuntimeError(err or out or 'Optimisation Windows échouée.')
-    _run(['ipconfig','/flushdns'])
-    return {'profile':profile,'competitive':competitive,'backup':str(Path(root)/BACKUP_NAME)}
+REG_SETTINGS = {
+    'game_auto': (r'Software\Microsoft\GameBar', 'AutoGameModeEnabled'),
+    'game_allow': (r'Software\Microsoft\GameBar', 'AllowAutoGameMode'),
+    'capture': (r'Software\Microsoft\Windows\CurrentVersion\GameDVR', 'AppCaptureEnabled'),
+    'dvr': (r'System\GameConfigStore', 'GameDVR_Enabled'),
+}
+RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+BALANCED = '381b4222-f694-41f0-9685-ff5bb260df2e'
+USB_SUB = '2a737441-1930-4402-8d77-b2bebba308a3'
+USB_SETTING = '48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+JOURNAL_NAME = 'pc-optimizer-state-v2.json'
+_MUTATION_LOCK = threading.Lock()
+OPTIONS = {
+    'game': ('Activer le mode Jeu Windows', 'Active les préférences Game Bar du compte courant.'),
+    'captures': ('Désactiver les captures Xbox Game Bar', 'Désactive les captures Game Bar ; aucun changement dans OBS.'),
+    'balanced': ('Utiliser le plan Équilibré', 'Change le plan actif, sans modifier les fréquences CPU.'),
+    'usb': ('Tester sans suspension USB sur secteur', 'Dépannage de déconnexions uniquement ; consommation potentiellement accrue.'),
+}
+APP_CANDIDATES = {
+    'Microsoft.BingNews': 'Actualités Microsoft',
+    'Microsoft.BingWeather': 'Météo Microsoft',
+    'Microsoft.MicrosoftSolitaireCollection': 'Microsoft Solitaire',
+    'Microsoft.Getstarted': 'Conseils Windows',
+    'Clipchamp.Clipchamp': 'Clipchamp',
+}
 
-def restore(root):
-    path=Path(root)/BACKUP_NAME
-    if not path.exists():raise FileNotFoundError('Aucune sauvegarde PC trouvée.')
-    b=json.loads(path.read_text(encoding='utf-8'))
-    power=b.get('power','');m=re.search(r'[0-9a-fA-F-]{36}',power or '')
-    if m:_run(['powercfg','/setactive',m.group(0)])
-    h=b.get('hags')
-    if h is None:_ps("Remove-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' HwSchMode -ErrorAction SilentlyContinue")
-    else:_ps("Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers' HwSchMode "+str(int(h))+" -Type DWord -Force")
-    for row in b.get('rss') or []:
-        name=str(row.get('Name','')).replace("'","''")
-        cmd='Enable' if row.get('Enabled') else 'Disable'
-        _ps(f"{cmd}-NetAdapterRss -Name '{name}' -ErrorAction SilentlyContinue")
-    for row in b.get('rsc') or []:
-        name=str(row.get('Name','')).replace("'","''");v4='$true' if row.get('IPv4Enabled') else '$false';v6='$true' if row.get('IPv6Enabled') else '$false'
-        _ps(f"Set-NetAdapterRsc -Name '{name}' -IPv4Enabled {v4} -IPv6Enabled {v6} -Confirm:$false -ErrorAction SilentlyContinue")
-    return True
+
+def _strict_json(script):
+    wrapped = "$ErrorActionPreference='Stop'; try { $result = & {\n" + script + "\n}; ConvertTo-Json -InputObject $result -Depth 8 -Compress } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
+    out, err, code = _ps(wrapped)
+    if code or not out:
+        raise RuntimeError(err or out or 'Le diagnostic Windows ne renvoie aucune donnée.')
+    try:
+        return json.loads(out.lstrip('\ufeff'))
+    except ValueError as exc:
+        raise RuntimeError('Réponse Windows illisible : '+out[:250]) from exc
+
+
+def _rows(data):
+    return data if isinstance(data, list) else ([] if data is None else [data])
+
+
+def _guid(value):
+    return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
+
+
+class WindowsSettings:
+    def __init__(self):
+        if os.name != 'nt':raise RuntimeError('Ces actions nécessitent Windows.')
+        import winreg
+        self.reg = winreg
+        self.identity = {'machine': platform.node(), 'sid': _strict_json('[Security.Principal.WindowsIdentity]::GetCurrent().User.Value')}
+
+    def read(self, spec):
+        kind = spec['kind']
+        if kind == 'registry':
+            key, name = self._registry_target(spec)
+            try:
+                with self.reg.OpenKey(self.reg.HKEY_CURRENT_USER, key) as handle:
+                    value, regtype = self.reg.QueryValueEx(handle, name)
+            except FileNotFoundError:
+                return {'exists': False}
+            if regtype not in (self.reg.REG_DWORD, self.reg.REG_SZ, self.reg.REG_EXPAND_SZ):
+                raise ValueError('Type de registre non pris en charge : '+name)
+            return {'exists': True, 'value': value, 'type': regtype}
+        if kind == 'power':
+            out, err, code = _run(['powercfg.exe', '/getactivescheme'])
+            match = re.search(r'\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b', out)
+            if code or not match:raise RuntimeError(err or 'Plan actif illisible.')
+            return match.group().lower()
+        if kind == 'usb':
+            value = ctypes.c_ulong()
+            code = ctypes.windll.powrprof.PowerReadACValueIndex(None, ctypes.byref(_guid(spec['plan'])), ctypes.byref(_guid(USB_SUB)), ctypes.byref(_guid(USB_SETTING)), ctypes.byref(value))
+            if code:raise OSError(code, 'Lecture de la suspension USB impossible sur ce plan.')
+            return value.value
+        raise ValueError('Type de réglage invalide.')
+
+    def _registry_target(self, spec):
+        if spec.get('id') in REG_SETTINGS:return REG_SETTINGS[spec['id']]
+        if spec.get('id') == 'startup' and isinstance(spec.get('name'), str) and spec['name'] and '\x00' not in spec['name']:
+            return RUN_KEY, spec['name']
+        raise ValueError('Réglage de registre non autorisé.')
+
+    def write(self, spec, value):
+        kind = spec['kind']
+        if kind == 'registry':
+            key, name = self._registry_target(spec)
+            if value['exists']:
+                with self.reg.CreateKeyEx(self.reg.HKEY_CURRENT_USER, key, 0, self.reg.KEY_SET_VALUE) as handle:
+                    self.reg.SetValueEx(handle, name, 0, value['type'], value['value'])
+            else:
+                try:
+                    with self.reg.OpenKey(self.reg.HKEY_CURRENT_USER, key, 0, self.reg.KEY_SET_VALUE) as handle:
+                        self.reg.DeleteValue(handle, name)
+                except FileNotFoundError:pass
+        elif kind == 'power':
+            value = str(uuid.UUID(value))
+            out, err, code = _run(['powercfg.exe', '/setactive', value])
+            if code:raise RuntimeError(err or out or 'Changement du plan refusé.')
+        elif kind == 'usb':
+            if value not in (0, 1):raise ValueError('Valeur USB invalide.')
+            code = ctypes.windll.powrprof.PowerWriteACValueIndex(None, ctypes.byref(_guid(spec['plan'])), ctypes.byref(_guid(USB_SUB)), ctypes.byref(_guid(USB_SETTING)), value)
+            if code:raise OSError(code, 'Modification USB refusée.')
+            active = self.read({'kind': 'power'})
+            if active == spec['plan']:
+                out, err, code = _run(['powercfg.exe', '/setactive', active])
+                if code:raise RuntimeError(err or out or 'Activation USB refusée.')
+        else:raise ValueError('Type de réglage invalide.')
+        if self.read(spec) != value:raise RuntimeError('La vérification du réglage a échoué.')
+
+
+def _save_state(path, data):
+    import tempfile
+    path = Path(path)
+    fd, temp = tempfile.mkstemp(prefix='pc-state-', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush();os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):os.unlink(temp)
+
+
+def _load_state(root, backend):
+    path = Path(root)/JOURNAL_NAME
+    if not path.exists():
+        if (Path(root)/BACKUP_NAME).exists():
+            raise RuntimeError('Une sauvegarde de l’ancien optimiseur existe. Elle est incomplète : aucun nouveau réglage ne sera appliqué ni cette sauvegarde écrasée. Conserve pc-optimizer-backup.json pour examiner la restauration des anciens changements.')
+        return {'schema': 2, 'identity': backend.identity, 'entries': []}
+    state = json.loads(path.read_text(encoding='utf-8'))
+    if state.get('schema') != 2 or state.get('identity') != backend.identity or not isinstance(state.get('entries'), list):
+        raise ValueError('Sauvegarde invalide ou créée sur un autre PC/compte Windows.')
+    return state
+
+
+@contextlib.contextmanager
+def _exclusive(root):
+    # Verrou de processus + verrou de fichier, libérés automatiquement après un crash.
+    if not _MUTATION_LOCK.acquire(blocking=False):raise RuntimeError('Une modification est déjà en cours.')
+    try:
+        with open(Path(root)/'pc-optimizer.lock', 'a+b') as handle:
+            handle.seek(0, 2)
+            if handle.tell() == 0:handle.write(b'0');handle.flush()
+            handle.seek(0)
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:yield
+            finally:
+                handle.seek(0)
+                if os.name == 'nt':msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:_MUTATION_LOCK.release()
+
+
+def _apply_changes(root, changes, backend):
+    path = Path(root)/JOURNAL_NAME
+    with _exclusive(root):
+        state = _load_state(root, backend)
+        if any(e.get('pending') for e in state['entries']):
+            raise RuntimeError('Une opération a été interrompue. Clique sur Restaurer avant de continuer.')
+        # Lire tous les réglages avant toute modification.
+        before = [(spec, value, backend.read(spec)) for spec, value in changes]
+        touched = []
+        try:
+            for spec, value, previous in before:
+                if previous == value:continue
+                entry = next((e for e in state['entries'] if e['spec'] == spec), None)
+                if entry is not None and previous != entry['applied']:
+                    raise RuntimeError('Ce réglage a changé hors d’Acolyte. Restaure d’abord la sauvegarde.')
+                if entry is None:
+                    entry = {'spec': spec, 'original': previous, 'applied': previous}
+                    state['entries'].append(entry)
+                entry['pending'] = True
+                entry['target'] = value
+                _save_state(path, state)  # Journal durable AVANT l’écriture Windows.
+                touched.append((entry, previous))
+                backend.write(spec, value)
+                entry.update(applied=value, pending=False)
+                _save_state(path, state)
+        except Exception as exc:
+            failures = []
+            for entry, previous in reversed(touched):
+                try:
+                    backend.write(entry['spec'], previous)
+                    entry.update(applied=previous, pending=False)
+                except Exception as rollback:failures.append(str(rollback))
+            _save_state(path, state)
+            if failures:raise RuntimeError('Échec ; restauration partielle. Sauvegarde conservée. '+str(exc)+' / '+'; '.join(failures)) from exc
+            raise RuntimeError('Échec ; changements de cette opération annulés. '+str(exc)) from exc
+        return {'changed': len(touched), 'backup': str(path)}
+
+
+def optimize(root, options=None, backend=None):
+    options = list(options if options is not None else ['game'])
+    if not options or not set(options).issubset(OPTIONS):raise ValueError('Sélectionne au moins un réglage valide.')
+    backend = backend or WindowsSettings()
+    changes = []
+    def dword(key, value):changes.append(({'kind': 'registry', 'id': key}, {'exists': True, 'type': 4, 'value': value}))
+    if 'game' in options:
+        dword('game_auto', 1);dword('game_allow', 1)
+    if 'captures' in options:
+        dword('capture', 0);dword('dvr', 0)
+    if 'balanced' in options:changes.append(({'kind': 'power'}, BALANCED))
+    if 'usb' in options:
+        plan = BALANCED if 'balanced' in options else backend.read({'kind': 'power'})
+        changes.append(({'kind': 'usb', 'plan': plan}, 0))
+    result = _apply_changes(root, changes, backend)
+    if not result['changed']:return 'Les réglages sélectionnés ont déjà les valeurs demandées. Aucun changement.'
+    return f"{result['changed']} réglage(s) modifié(s) et vérifié(s).\nSauvegarde initiale conservée : {result['backup']}\nAucun gain de FPS n’est garanti. Teste les mêmes usages avant/après."
+
+
+def restore(root, backend=None):
+    backend = backend or WindowsSettings()
+    with _exclusive(root):
+        state = _load_state(root, backend)
+        if not state['entries']:return 'Aucun réglage à restaurer.'
+        errors = []
+        for entry in reversed(state['entries'][:]):
+            try:
+                backend.write(entry['spec'], entry['original'])
+                state['entries'].remove(entry)
+                _save_state(Path(root)/JOURNAL_NAME, state)
+            except Exception as exc:errors.append(str(exc))
+        if errors:raise RuntimeError('Restauration partielle ; sauvegarde conservée pour réessayer : '+'; '.join(errors))
+        archive = Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
+        os.replace(Path(root)/JOURNAL_NAME, archive)
+        return 'Tous les réglages suivis par cette version ont été restaurés et vérifiés.\nLes désinstallations et les changements manuels dans Windows/AMD/BIOS ne sont pas inclus.'
+
+
+def startup_items():
+    backend = WindowsSettings();reg = backend.reg;items = []
+    try:
+        with reg.OpenKey(reg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            for i in range(reg.QueryInfoKey(key)[1]):
+                name, value, kind = reg.EnumValue(key, i)
+                if kind in (reg.REG_SZ, reg.REG_EXPAND_SZ):items.append({'name': name, 'command': value})
+    except FileNotFoundError:pass
+    return items
+
+
+def disable_startup(root, name):
+    backend = WindowsSettings();spec = {'kind': 'registry', 'id': 'startup', 'name': name}
+    if not backend.read(spec)['exists']:raise RuntimeError('Cette entrée de démarrage n’existe plus.')
+    result = _apply_changes(root, [(spec, {'exists': False})], backend)
+    return f"Démarrage automatique retiré pour {name}. Le programme reste installé.\nRestaurer réactive les entrées suivies. {result['changed']} changement."
+
+
+def removable_apps():
+    data = _strict_json("@(Get-AppxPackage | Where-Object { -not $_.NonRemovable -and -not $_.IsFramework } | Select-Object Name,PackageFullName)")
+    return [{'name': APP_CANDIDATES[r['Name']], 'package': r['Name']} for r in _rows(data) if r['Name'] in APP_CANDIDATES]
+
+
+def remove_app(root, package):
+    if package not in APP_CANDIDATES:raise ValueError('Application non autorisée.')
+    # Identifiant strictement issu de la liste fermée, sans saisie PowerShell libre.
+    with _exclusive(root):
+        out, err, code = _ps("$ErrorActionPreference='Stop'; Get-AppxPackage -Name '"+package+"' | Remove-AppxPackage -ErrorAction Stop", 120)
+        if code:raise RuntimeError(err or out or 'Désinstallation refusée.')
+        if any(r['package'] == package for r in removable_apps()):raise RuntimeError('Application encore présente après la désinstallation.')
+    return APP_CANDIDATES[package]+' désinstallé pour le compte courant.\nRéinstallation via Microsoft Store ; les données locales ne sont pas sauvegardées par Acolyte.'
+
+
+def diagnostics(category):
+    scripts = {
+        'ram': "@(Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)",
+        'gpu': "@(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,DriverDate)",
+        'usb': "@(Get-PnpDevice -Class USB -PresentOnly | Select-Object Status,FriendlyName)",
+    }
+    if category == 'power':
+        out, err, code = _run(['powercfg.exe', '/list'])
+        if code:raise RuntimeError(err or out)
+        return out
+    if category not in scripts:raise ValueError('Diagnostic inconnu.')
+    data = _strict_json(scripts[category])
+    notes = {
+        'ram': 'Valeurs rapportées par Windows. La fréquence seule ne confirme pas EXPO/XMP. Activation à vérifier dans le BIOS, selon le kit mémoire et le manuel de la carte mère.',
+        'gpu': 'Pilotes installés. La disponibilité d’une mise à jour se vérifie chez le fabricant. Aucun overclocking ou réglage de tension automatique.',
+        'usb': 'Garde la suspension sélective USB par défaut. Le test optionnel concerne uniquement des déconnexions de périphériques sur secteur.',
+    }
+    return notes[category]+'\n\n'+json.dumps(data, ensure_ascii=False, indent=2)
+
+
+LINKS = {
+    'apps': 'ms-settings:appsfeatures', 'startup': 'ms-settings:startupapps',
+    'updates': 'ms-settings:windowsupdate', 'graphics': 'ms-settings:display-advancedgraphics',
+    'game': 'ms-settings:gaming-gamemode', 'power': 'ms-settings:powersleep',
+    'amd': 'https://www.amd.com/en/support/download/drivers.html',
+    'nvidia': 'https://www.nvidia.com/Download/index.aspx',
+    'intel': 'https://www.intel.com/content/www/us/en/support/detect.html',
+    'board': 'https://www.msi.com/Motherboard/B650-GAMING-PLUS-WIFI/support',
+    'store': 'ms-windows-store://home',
+}
+
+
+def open_panel(name):
+    import webbrowser
+    target = LINKS[name]
+    if target.startswith('https:'):webbrowser.open(target)
+    elif os.name == 'nt':os.startfile(target)
+    else:raise RuntimeError('Ce panneau nécessite Windows.')
