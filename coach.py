@@ -193,24 +193,24 @@ class PCPremiumUI:
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
-        self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=292)
+        self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=330)
         self._build_sidebar();self._build_topbar();self._build_main();self._build_summary()
         self.show('dashboard')
         self.parent.after(350,self.scan_full)
         self.parent.after(1000,self._tick_live)
 
     def _build_sidebar(self):
-        side=ctk.CTkFrame(self.root,width=218,fg_color='#0B1426',corner_radius=0)
+        side=ctk.CTkFrame(self.root,width=236,fg_color='#0B1426',corner_radius=0)
         side.grid(row=0,column=0,rowspan=2,sticky='nsew');side.grid_propagate(False)
         brand=ctk.CTkFrame(side,fg_color='transparent');brand.pack(fill='x',padx=16,pady=(18,12))
-        ctk.CTkLabel(brand,text='ACOLYTE',text_color=COLORS['text'],font=ctk.CTkFont(size=24,weight='bold')).pack(anchor='w')
-        ctk.CTkLabel(brand,text='PERFORMANCE',text_color=COLORS['cyan'],font=ctk.CTkFont(size=14,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(brand,text='ACOLYTE',text_color=COLORS['text'],font=ctk.CTkFont(size=27,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(brand,text='PERFORMANCE',text_color=COLORS['cyan'],font=ctk.CTkFont(size=16,weight='bold')).pack(anchor='w')
         ctk.CTkLabel(brand,text='Analyse • Optimise • Mesure',text_color=COLORS['muted'],font=ctk.CTkFont(size=10)).pack(anchor='w',pady=(3,8))
         ctk.CTkFrame(side,height=2,fg_color=COLORS['cyan']).pack(fill='x',padx=16,pady=(0,10))
         for key,icon,label in self.NAV:
-            b=ctk.CTkButton(side,text=f'{icon}  {label}',anchor='w',height=38,corner_radius=10,
+            b=ctk.CTkButton(side,text=f'{icon}  {label}',anchor='w',height=42,corner_radius=11,
                 fg_color='transparent',hover_color=COLORS['panel2'],text_color=COLORS['text'],
-                font=ctk.CTkFont(size=12,weight='bold'),command=lambda k=key:self.show(k))
+                font=ctk.CTkFont(size=13,weight='bold'),command=lambda k=key:self.show(k))
             b.pack(fill='x',padx=10,pady=2);self.nav_buttons[key]=b
         self.admin_badge=ctk.CTkLabel(side,text='● ADMIN : ...',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold'))
         self.admin_badge.pack(side='bottom',anchor='w',padx=16,pady=14)
@@ -219,16 +219,16 @@ class PCPremiumUI:
         top=ctk.CTkFrame(self.root,fg_color='transparent')
         top.grid(row=0,column=1,columnspan=2,sticky='ew',padx=18,pady=(14,10));top.grid_columnconfigure(0,weight=1)
         title=ctk.CTkFrame(top,fg_color='transparent');title.grid(row=0,column=0,sticky='w')
-        ctk.CTkLabel(title,text='OPTIMISATION PC',text_color=COLORS['text'],font=ctk.CTkFont(size=25,weight='bold')).pack(anchor='w')
-        ctk.CTkLabel(title,text='Optimisation mesurée et restaurable pour ton PC gaming',text_color=COLORS['muted'],font=ctk.CTkFont(size=11)).pack(anchor='w')
+        ctk.CTkLabel(title,text='OPTIMISATION PC',text_color=COLORS['text'],font=ctk.CTkFont(size=30,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(title,text='Optimisation mesurée et restaurable pour ton PC gaming',text_color=COLORS['muted'],font=ctk.CTkFont(size=12)).pack(anchor='w')
         actions=ctk.CTkFrame(top,fg_color='transparent');actions.grid(row=0,column=1,sticky='e')
-        self.scan_btn=ctk.CTkButton(actions,text='✦  SCAN COMPLET',command=self.scan_full,width=130,height=38,corner_radius=11,fg_color=COLORS['cyan2'])
+        self.scan_btn=ctk.CTkButton(actions,text='✦  SCAN COMPLET',command=self.scan_full,width=142,height=42,corner_radius=12,fg_color=COLORS['cyan2'])
         self.scan_btn.pack(side='left',padx=4)
-        self.optimize_btn=ctk.CTkButton(actions,text='⚡  OPTIMISER',command=self.optimize_smart,width=122,height=38,corner_radius=11,fg_color=COLORS['purple'])
+        self.optimize_btn=ctk.CTkButton(actions,text='⚡  OPTIMISER',command=self.optimize_smart,width=134,height=42,corner_radius=12,fg_color=COLORS['purple'])
         self.optimize_btn.pack(side='left',padx=4)
-        self.bench_btn=ctk.CTkButton(actions,text='◫  BENCHMARK',command=self.benchmark,width=120,height=38,corner_radius=11,fg_color='#1675E0')
+        self.bench_btn=ctk.CTkButton(actions,text='◫  BENCHMARK',command=self.benchmark,width=132,height=42,corner_radius=12,fg_color='#1675E0')
         self.bench_btn.pack(side='left',padx=4)
-        self.restore_btn=ctk.CTkButton(actions,text='↶  RESTAURER',command=self.restore,width=110,height=38,corner_radius=11,fg_color=COLORS['danger'])
+        self.restore_btn=ctk.CTkButton(actions,text='↶  RESTAURER',command=self.restore,width=122,height=42,corner_radius=12,fg_color=COLORS['danger'])
         self.restore_btn.pack(side='left',padx=4)
 
     def _build_main(self):
@@ -242,14 +242,14 @@ class PCPremiumUI:
             ('cpu','CPU',COLORS['cyan']),('gpu','GPU',COLORS['purple2']),('ram','RAM',COLORS['success']),('net','RÉSEAU',COLORS['gold'])]):
             box=ctk.CTkFrame(kpis,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#203354')
             box.grid(row=0,column=i,sticky='ew',padx=(0 if i==0 else 5,0 if i==3 else 5))
-            ctk.CTkLabel(box,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=13,pady=(10,1))
-            value=ctk.CTkLabel(box,text='—',text_color=COLORS['text'],font=ctk.CTkFont(size=18,weight='bold'))
-            value.pack(anchor='w',padx=13)
-            sub=ctk.CTkLabel(box,text='Analyse en attente',text_color=accent,font=ctk.CTkFont(size=9))
-            sub.pack(anchor='w',padx=13,pady=(1,10));self.kpis[key]=(value,sub)
+            ctk.CTkLabel(box,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=11,weight='bold')).pack(anchor='w',padx=15,pady=(12,2))
+            value=ctk.CTkLabel(box,text='—',text_color=COLORS['text'],font=ctk.CTkFont(size=22,weight='bold'))
+            value.pack(anchor='w',padx=15)
+            sub=ctk.CTkLabel(box,text='Analyse en attente',text_color=accent,font=ctk.CTkFont(size=10))
+            sub.pack(anchor='w',padx=15,pady=(2,12));self.kpis[key]=(value,sub)
 
         self.section_header=ctk.CTkFrame(main,fg_color='transparent');self.section_header.grid(row=1,column=0,sticky='ew',pady=(3,8))
-        self.section_title=ctk.CTkLabel(self.section_header,text='',text_color=COLORS['text'],font=ctk.CTkFont(size=20,weight='bold'))
+        self.section_title=ctk.CTkLabel(self.section_header,text='',text_color=COLORS['text'],font=ctk.CTkFont(size=23,weight='bold'))
         self.section_title.pack(side='left')
         self.section_badge=ctk.CTkLabel(self.section_header,text='LOCAL',fg_color='#173354',corner_radius=999,text_color=COLORS['cyan'],font=ctk.CTkFont(size=9,weight='bold'),padx=9,pady=3)
         self.section_badge.pack(side='left',padx=10)
@@ -257,7 +257,7 @@ class PCPremiumUI:
         self.content=ctk.CTkScrollableFrame(main,fg_color='#0A1324',corner_radius=15,border_width=1,border_color='#1E3151')
         self.content.grid(row=2,column=0,sticky='nsew')
 
-        self.tabs=ctk.CTkTabview(main,height=175,fg_color=COLORS['panel'],segmented_button_fg_color='#111E34',
+        self.tabs=ctk.CTkTabview(main,height=150,fg_color=COLORS['panel'],segmented_button_fg_color='#111E34',
             segmented_button_selected_color=COLORS['purple'],corner_radius=15)
         self.tabs.grid(row=3,column=0,sticky='ew',pady=(9,0))
         self.summary_text=self._text_tab('Résumé')
@@ -267,7 +267,7 @@ class PCPremiumUI:
 
     def _text_tab(self,name):
         tab=self.tabs.add(name)
-        box=ctk.CTkTextbox(tab,height=112,fg_color='#07101F',text_color='#DCEBFF',corner_radius=10,font=('Consolas',10))
+        box=ctk.CTkTextbox(tab,height=88,fg_color='#07101F',text_color='#DCEBFF',corner_radius=10,font=('Consolas',10))
         box.pack(fill='both',expand=True,padx=5,pady=5);return box
 
     def _build_summary(self):
@@ -277,6 +277,8 @@ class PCPremiumUI:
         self.ring=ScoreRing(side,150,COLORS['panel']);self.ring.pack(pady=(0,2))
         self.score_state=ctk.CTkLabel(side,text='Scan en cours…',text_color=COLORS['cyan'],font=ctk.CTkFont(size=13,weight='bold'))
         self.score_state.pack()
+        self.scan_progress=ctk.CTkProgressBar(side,height=8,corner_radius=999,progress_color=COLORS['cyan2'],fg_color='#263758')
+        self.scan_progress.pack(fill='x',padx=22,pady=(10,2));self.scan_progress.set(0)
         ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=14)
         ctk.CTkLabel(side,text='RECOMMANDATIONS',text_color=COLORS['text'],font=ctk.CTkFont(size=12,weight='bold')).pack(anchor='w',padx=16)
         self.reco_frame=ctk.CTkFrame(side,fg_color='transparent');self.reco_frame.pack(fill='x',padx=12,pady=8)
@@ -307,15 +309,15 @@ class PCPremiumUI:
         box.pack(fill='x',padx=10,pady=(10,8))
         bar=ctk.CTkFrame(box,width=5,fg_color=accent,corner_radius=4);bar.pack(side='left',fill='y',padx=(0,12),pady=12)
         txt=ctk.CTkFrame(box,fg_color='transparent');txt.pack(side='left',fill='x',expand=True,pady=12)
-        ctk.CTkLabel(txt,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=17,weight='bold')).pack(anchor='w')
-        ctk.CTkLabel(txt,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=10),wraplength=760,justify='left').pack(anchor='w',pady=(3,0))
+        ctk.CTkLabel(txt,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=19,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(txt,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=11),wraplength=840,justify='left').pack(anchor='w',pady=(3,0))
 
     def _action_card(self,title,desc,status='Disponible',impact='Mesuré',risk='Faible',option=None,command=None,button='OUVRIR'):
         card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
         card.pack(fill='x',padx=10,pady=5)
         left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=14,pady=12)
-        ctk.CTkLabel(left,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=14,weight='bold')).pack(anchor='w')
-        ctk.CTkLabel(left,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=650,justify='left').pack(anchor='w',pady=(3,7))
+        ctk.CTkLabel(left,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=15,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(left,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=10),wraplength=700,justify='left').pack(anchor='w',pady=(3,7))
         tags=ctk.CTkFrame(left,fg_color='transparent');tags.pack(anchor='w')
         for text,color in [(status,'#15476A'),('Impact '+impact,'#594317'),('Risque '+risk,'#174B3A')]:
             ctk.CTkLabel(tags,text=text,fg_color=color,corner_radius=999,text_color='white',font=ctk.CTkFont(size=8,weight='bold'),padx=8,pady=2).pack(side='left',padx=(0,5))
@@ -334,10 +336,28 @@ class PCPremiumUI:
     def _page_dashboard(self):
         self._hero('Centre de contrôle','Une vue unique du matériel, de Windows, du réseau et des recommandations prioritaires.',COLORS['cyan'])
         self._button_row([('✦ SCAN COMPLET',self.scan_full,COLORS['cyan2']),('◫ BENCHMARK RÉSEAU',self.benchmark,'#1675E0'),('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple'])])
+
+        strip=ctk.CTkFrame(self.content,fg_color='transparent');strip.pack(fill='x',padx=10,pady=(2,8))
+        for i in range(3):strip.grid_columnconfigure(i,weight=1,uniform='dash')
+        cards=[
+            ('OPTIMISATIONS',str(len(pc_optimizer.recommended_options(self.last_scan))) if self.last_scan else '—','Réglages sûrs recommandés',COLORS['purple2']),
+            ('JEUX DÉTECTÉS',str(len(self.last_scan.get('games') or [])) if self.last_scan else '—','Profils locaux détectés',COLORS['cyan']),
+            ('DÉMARRAGE',str(self.last_scan.get('startup_count')) if self.last_scan and self.last_scan.get('startup_count') is not None else '—','Entrées Run détectées',COLORS['gold'])]
+        for i,(title,value,sub,accent) in enumerate(cards):
+            box=ctk.CTkFrame(strip,fg_color=COLORS['panel'],corner_radius=14,border_width=1,border_color='#203354')
+            box.grid(row=0,column=i,sticky='ew',padx=(0 if i==0 else 5,0 if i==2 else 5))
+            ctk.CTkLabel(box,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',padx=13,pady=(10,1))
+            ctk.CTkLabel(box,text=value,text_color=accent,font=ctk.CTkFont(size=24,weight='bold')).pack(anchor='w',padx=13)
+            ctk.CTkLabel(box,text=sub,text_color=COLORS['muted'],font=ctk.CTkFont(size=9)).pack(anchor='w',padx=13,pady=(1,10))
+
         if self.last_scan:
+            if not self.last_scan.get('recommendations'):
+                self._action_card('Configuration saine','Aucune anomalie prioritaire détectée par les contrôles actuels. Continue avec un benchmark avant/après pour mesurer les gains.','OK','Mesuré','Nul')
             for rec in self.last_scan.get('recommendations',[])[:5]:
                 self._action_card(rec['title'],rec['detail'],'Recommandé','Variable','Faible',
                     option=rec.get('option'),command=(lambda sec=rec.get('section'):self.show(sec)) if rec.get('section') else None,button='VOIR')
+        else:
+            self._action_card('Scan matériel & Windows','Lance un scan complet pour remplir le score, identifier les réglages utiles et éviter les tweaks inutiles.','À lancer','Élevé','Nul',command=self.scan_full,button='SCANNER')
 
     def _page_performance(self):
         self._hero('Performances gaming','Réglages sûrs et restaurables. Aucun overclocking, undervolt ou désactivation de sécurité automatique.',COLORS['purple2'])
@@ -403,9 +423,16 @@ class PCPremiumUI:
         self._run('Diagnostic '+category,lambda:pc_optimizer.diagnostics(category),lambda x:self._show_result('Diagnostic '+category,x))
 
     def scan_full(self):
+        try:
+            self.scan_progress.configure(mode='indeterminate');self.scan_progress.start()
+            self.score_state.configure(text='Analyse du système…',text_color=COLORS['cyan'])
+        except Exception:pass
         self._run('Scan complet',pc_optimizer.full_scan,self._scan_done)
 
     def _scan_done(self,data):
+        try:
+            self.scan_progress.stop();self.scan_progress.configure(mode='determinate');self.scan_progress.set(1)
+        except Exception:pass
         self.last_scan=data;system=data.get('system',{});network=data.get('network',{})
         self.admin_badge.configure(text='● ADMIN : '+('OUI' if system.get('admin') else 'NON'),text_color=COLORS['success'] if system.get('admin') else COLORS['warning'])
         self.kpis['cpu'][0].configure(text=self._short_cpu(system.get('cpu','—')))
@@ -544,6 +571,9 @@ class PCPremiumUI:
         elif value is not None:self._show_result(label,value)
 
     def _error(self,label,exc):
+        try:
+            self.scan_progress.stop();self.scan_progress.configure(mode='determinate');self.scan_progress.set(0)
+        except Exception:pass
         self.busy=False;self._set_busy(False);self.log('[ERREUR] '+label+' : '+str(exc))
         messagebox.showerror('Acolyte Performance',label+' :\n'+str(exc))
 
