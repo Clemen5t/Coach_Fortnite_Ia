@@ -1,0 +1,22 @@
+name: Python checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  syntax-and-updater-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Compile Python sources
+        shell: pwsh
+        run: |
+          python -m py_compile coach.py local_ai.py pc_optimizer.py updater.py test_local_ai.py test_updater.py
+      - name: Run updater tests
+        run: python -m unittest -v test_updater
