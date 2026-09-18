@@ -17,6 +17,6 @@ jobs:
       - name: Compile Python sources
         shell: pwsh
         run: |
-          python -m py_compile coach.py local_ai.py pc_optimizer.py updater.py test_local_ai.py test_updater.py
+          python -m py_compile coach.py local_ai.py pc_optimizer.py updater.py test_local_ai.py test_updater.py test_pc_optimizer.py
       - name: Run updater tests
-        run: python -m unittest -v test_updater
+        run: python -m unittest -v test_updater test_pc_optimizer
