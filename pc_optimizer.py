@@ -1527,8 +1527,39 @@ def _game_executable(game):
         return str(all_exe[0])
     return None
 
+def _detect_common_library_games():
+    """Détection best-effort de bibliothèques sans parser de format propriétaire.
+    On inspecte uniquement le premier niveau de dossiers connus pour éviter les scans lourds.
+    """
+    env_pf=Path(os.environ.get('ProgramFiles',r'C:\Program Files'))
+    env_pf86=Path(os.environ.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))
+    roots=[
+        ('Xbox',Path(r'C:\XboxGames')),
+        ('EA App',env_pf/'EA Games'),
+        ('EA App',env_pf/'Electronic Arts'),
+        ('Ubisoft Connect',env_pf86/'Ubisoft'/'Ubisoft Game Launcher'/'games'),
+        ('Ubisoft Connect',env_pf/'Ubisoft'/'Ubisoft Game Launcher'/'games'),
+        ('GOG',env_pf86/'GOG Galaxy'/'Games'),
+        ('GOG',env_pf/'GOG Galaxy'/'Games'),
+    ]
+    games=[]
+    ignored={'support','redist','redistributables','launcher','update','installer','commonredist','directx'}
+    for launcher,root in roots:
+        if not root.exists() or not root.is_dir():continue
+        try:
+            children=list(root.iterdir())[:250]
+        except OSError:continue
+        for child in children:
+            if not child.is_dir() or child.name.casefold() in ignored:continue
+            game={'launcher':launcher,'name':child.name,'path':str(child)}
+            exe=_game_executable(game)
+            if exe:
+                game['exe']=exe
+                games.append(game)
+    return games
+
 def detected_games():
-    games=_detect_epic_games()+_detect_steam_games()+_detect_riot_games()
+    games=_detect_epic_games()+_detect_steam_games()+_detect_riot_games()+_detect_common_library_games()
     # Fortnite fallback si le manifeste Epic manque.
     candidates=[
         ('Fortnite',Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Epic Games'/'Fortnite'),
@@ -1541,7 +1572,7 @@ def detected_games():
         key=(str(game.get('name') or '').casefold(),str(game.get('path') or '').casefold())
         if key in unique:continue
         row=dict(game)
-        row['exe']=_game_executable(row)
+        row['exe']=row.get('exe') or _game_executable(row)
         row['profile']='fortnite' if str(row.get('name') or '').casefold()=='fortnite' else 'generic'
         unique[key]=row
     return sorted(unique.values(),key=lambda x:(str(x.get('launcher')),str(x.get('name')).casefold()))
@@ -1981,6 +2012,16 @@ def open_graphics_settings():
     if os.name!='nt':raise RuntimeError('Ce panneau nécessite Windows.')
     os.startfile('ms-settings:display-advancedgraphics')
     return 'Paramètres graphiques Windows ouverts.'
+
+def reboot_to_firmware():
+    """Demande à Windows de redémarrer directement vers l'interface firmware UEFI.
+    Ne modifie aucune valeur BIOS/EXPO.
+    """
+    if os.name!='nt':raise RuntimeError('Le redémarrage UEFI nécessite Windows.')
+    if not is_admin():raise PermissionError('Les droits administrateur sont requis pour redémarrer vers l’UEFI.')
+    out,err,code=_run(['shutdown.exe','/r','/fw','/t','0'])
+    if code:raise RuntimeError(err or out or 'Windows a refusé le redémarrage vers l’UEFI.')
+    return 'Redémarrage vers l’UEFI demandé.'
 
 def open_panel(name):
     import webbrowser
