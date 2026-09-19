@@ -50,6 +50,36 @@ jobs:
           }
           Write-Host ($test | ConvertTo-Json -Compress)
 
+      - name: GUI desktop smoke test
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "acolyte-gui-smoke"
+          if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $p = Start-Process -FilePath ".\dist\Acolyte.exe" -ArgumentList "--gui-smoke-test-dir", ('"' + $out + '"') -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            try { $p.Kill() } catch {}
+            throw "Acolyte GUI smoke test timed out"
+          }
+          if ($p.ExitCode -ne 0) {
+            if (Test-Path (Join-Path $out "gui-smoke-report.json")) {
+              Get-Content (Join-Path $out "gui-smoke-report.json") -Raw
+            }
+            throw "Acolyte GUI smoke test exited with $($p.ExitCode)"
+          }
+          $report = Get-Content (Join-Path $out "gui-smoke-report.json") -Raw | ConvertFrom-Json
+          if (!$report.ok -or $report.screens.Count -lt 4) {
+            throw "Acolyte GUI smoke report invalid: $($report | ConvertTo-Json -Depth 8 -Compress)"
+          }
+          New-Item -ItemType Directory -Path ".\gui-smoke" -Force | Out-Null
+          Copy-Item "$out\*" ".\gui-smoke\" -Recurse -Force
+          Write-Host ($report | ConvertTo-Json -Depth 8 -Compress)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Acolyte-gui-smoke
+          path: gui-smoke/
+
       - name: Create SHA-256 file
         shell: pwsh
         run: |
