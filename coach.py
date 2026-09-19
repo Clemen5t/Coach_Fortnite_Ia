@@ -189,7 +189,7 @@ class PCPremiumUI:
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
         self.option_vars={k:tk.BooleanVar(value=False) for k in pc_optimizer.OPTIONS}
-        self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={}
+        self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={};self.feature_actual_states={};self.pending_feature_keys=set()
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
         ctk.set_appearance_mode('dark')
@@ -358,31 +358,68 @@ class PCPremiumUI:
 
     def _toggle_feature(self,key):
         if self.busy:
-            # Le scan remettra la vraie valeur.
             if self.last_scan:self._sync_feature_switches(self.last_scan)
             return
+        actual=self.feature_actual_states.get(key)
         desired=bool(self.option_vars[key].get())
-        title=pc_optimizer.OPTIONS[key][0]
-        if desired:
-            self._run('Activation '+title,lambda:pc_optimizer.apply_selected([key],self.app_dir),
-                lambda result:self._feature_changed(title,result))
-        else:
-            self._run('Restauration '+title,lambda:pc_optimizer.restore_feature(self.app_dir,key),
-                lambda result:self._feature_changed(title,result))
+        if isinstance(actual,bool) and desired==actual:self.pending_feature_keys.discard(key)
+        else:self.pending_feature_keys.add(key)
+        label=self.feature_state_labels.get(key)
+        if label:
+            if key in self.pending_feature_keys:
+                label.configure(text='EN ATTENTE',fg_color='#5A4315',text_color='#FFD56A')
+            elif actual is True:
+                label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
+            elif actual is False:
+                label.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
+            else:
+                label.configure(text='INDISPONIBLE',fg_color='#30394B',text_color='#9EB0CC')
 
-    def _feature_changed(self,title,result):
-        self._show_result(title,result)
+    def _apply_pending_features(self,keys):
+        keys=[k for k in keys if k in self.pending_feature_keys]
+        if not keys:return messagebox.showinfo('Acolyte Performance','Aucun changement en attente dans cette section.')
+        to_enable=[k for k in keys if bool(self.option_vars[k].get())]
+        to_disable=[k for k in keys if not bool(self.option_vars[k].get())]
+        lines=[]
+        for key in to_enable:lines.append('✓ Activer : '+pc_optimizer.OPTIONS[key][0])
+        for key in to_disable:lines.append('↶ Désactiver/restaurer : '+pc_optimizer.OPTIONS[key][0])
+        if not messagebox.askyesno('Appliquer les changements','\n'.join(lines)+'\n\nAcolyte appliquera tout en une fois puis fera une seule analyse de vérification. Continuer ?'):return
+        def work():
+            results=[]
+            if to_enable:
+                results.append(pc_optimizer.apply_selected(to_enable,self.app_dir))
+            for key in to_disable:
+                results.append(pc_optimizer.restore_feature(self.app_dir,key))
+            return '\n'.join(str(x) for x in results if x)
+        self._run('Application des changements',work,lambda result:self._pending_applied(result,keys))
+
+    def _pending_applied(self,result,keys):
+        for key in keys:self.pending_feature_keys.discard(key)
+        self._show_result('Changements appliqués',result)
+        # Une seule analyse après tout le lot, pas à chaque interrupteur.
         self.parent.after(250,self.scan_full)
+
+    def _cancel_pending_features(self,keys):
+        for key in keys:
+            self.pending_feature_keys.discard(key)
+            state=self.feature_actual_states.get(key)
+            if isinstance(state,bool):self.option_vars[key].set(state)
+        if self.last_scan:self._sync_feature_switches(self.last_scan)
 
     def _sync_feature_switches(self,data):
         states=((data.get('settings') or {}).get('feature_states') or {})
         for key,var in self.option_vars.items():
             state=states.get(key)
-            if isinstance(state,bool):var.set(state)
-            elif state is None:var.set(False)
+            self.feature_actual_states[key]=state
+            # Ne pas écraser une sélection utilisateur qui n'est pas encore appliquée.
+            if key not in self.pending_feature_keys:
+                if isinstance(state,bool):var.set(state)
+                elif state is None:var.set(False)
             label=self.feature_state_labels.get(key)
             if label:
-                if state is True:label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
+                if key in self.pending_feature_keys:
+                    label.configure(text='EN ATTENTE',fg_color='#5A4315',text_color='#FFD56A')
+                elif state is True:label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
                 elif state is False:label.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
                 else:label.configure(text='INDISPONIBLE',fg_color='#30394B',text_color='#9EB0CC')
 
@@ -432,10 +469,12 @@ class PCPremiumUI:
             ('vbs_off','VBS / Memory Integrity','Option avancée qui coupe VBS/HVCI. Peut améliorer certains scénarios mais réduit la sécurité et nécessite un redémarrage.','Variable','Élevé'),
             ('background_services','Services de télémétrie','Désactive uniquement DiagTrack/dmwappushservice s’ils existent.','Faible','Moyen'),
         ])
-        self._button_row([('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple']),
+        perf_keys=['game','captures','background_apps','hags_on','fast_startup_off','hibernation_off','sysmain_off','balanced','amd_gpu','vbs_off','background_services']
+        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(perf_keys),COLORS['success']),
+                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(perf_keys),COLORS['panel2']),
+                          ('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple']),
                           ('🖥 FRÉQUENCE ÉCRAN MAX',self.max_refresh_rate,COLORS['cyan2']),
-                          ('🗓 OPTIMISER TÂCHES',self.optimize_tasks,COLORS['panel2']),
-                          ('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2'])])
+                          ('🗓 OPTIMISER TÂCHES',self.optimize_tasks,COLORS['panel2'])])
 
     def _page_network(self):
         self._hero('Réseau & latence','Acolyte sépare les réglages fiables des tweaks à tester. Le DNS n’est jamais présenté comme une baisse garantie du ping en partie.',COLORS['cyan'])
@@ -446,10 +485,12 @@ class PCPremiumUI:
             ('nagle_off','Test sans Nagle','Applique TCPNoDelay et TcpAckFrequency sur l’interface active. À comparer avant/après.','Variable','Moyen'),
             ('p2p_off','Partage P2P des mises à jour','Désactive le P2P de Delivery Optimization afin d’éviter des uploads Windows en arrière-plan.','Faible','Faible'),
         ])
-        self._button_row([('◫ BENCHMARK',self.benchmark,'#1675E0'),
+        net_keys=['net_power','net_eee','tcp_baseline','nagle_off','p2p_off']
+        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(net_keys),COLORS['success']),
+                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(net_keys),COLORS['panel2']),
+                          ('◫ BENCHMARK',self.benchmark,'#1675E0'),
                           ('⚡ DNS AUTO',self.auto_dns,COLORS['purple']),
-                          ('↻ RAFRAÎCHIR RÉSEAU',self.refresh_network,COLORS['cyan2']),
-                          ('ANALYSER',lambda:self._diagnostic('network'),COLORS['panel2'])])
+                          ('↻ RAFRAÎCHIR RÉSEAU',self.refresh_network,COLORS['cyan2'])])
 
     def _page_gpu(self):
         self._hero('Carte graphique','Détection du GPU principal, pilote et profil AMD automatique sans overclocking ni clé Adrenalin privée.',COLORS['purple2'])
@@ -457,9 +498,11 @@ class PCPremiumUI:
             ('amd_gpu','Optimisation GPU AMD','Applique automatiquement le profil Windows gaming pour Fortnite et la RX 7900 XT.','Élevé','Faible'),
             ('hags_on','HAGS','Planification GPU accélérée par matériel, mesurable avec le benchmark en jeu.','Variable','Faible'),
         ])
-        self._button_row([('LIRE LES PILOTES',lambda:self._diagnostic('gpu'),COLORS['cyan2']),
+        gpu_keys=['amd_gpu','hags_on']
+        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(gpu_keys),COLORS['success']),
+                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(gpu_keys),COLORS['panel2']),
+                          ('LIRE LES PILOTES',lambda:self._diagnostic('gpu'),COLORS['cyan2']),
                           ('AMD OFFICIEL',lambda:self._open('amd'),COLORS['purple']),
-                          ('GRAPHISMES WINDOWS',lambda:self._open('graphics'),COLORS['panel2']),
                           ('RESET CACHE SHADERS',self.reset_shader_cache,COLORS['panel2'])])
 
     def _page_privacy(self):
@@ -475,7 +518,10 @@ class PCPremiumUI:
             ('online_speech','Reconnaissance vocale en ligne','Désactive le consentement à la reconnaissance vocale connectée Windows.','Faible','Faible'),
             ('storage_sense_off','Storage Sense','Désactive le nettoyage automatique Storage Sense.','Faible','Faible'),
         ])
-        self._button_row([('PARAMÈTRES CONFIDENTIALITÉ',lambda:self._open('privacy'),COLORS['panel2'])])
+        privacy_keys=['ads','suggestions','silent_installs','tailored','telemetry_min','error_reporting','location','online_speech','storage_sense_off']
+        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(privacy_keys),COLORS['success']),
+                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(privacy_keys),COLORS['panel2']),
+                          ('PARAMÈTRES CONFIDENTIALITÉ',lambda:self._open('privacy'),COLORS['panel2'])])
 
     def _page_comfort(self):
         self._hero('Confort & interface','Réglages d’ergonomie et de fond qui rendent Windows plus prévisible sans toucher au cœur du système.',COLORS['gold'])
@@ -487,7 +533,10 @@ class PCPremiumUI:
             ('copilot_off','Microsoft Copilot','Masque Copilot via stratégie utilisateur.','Faible','Faible'),
             ('classic_context','Menu contextuel classique','Restaure le menu clic droit classique de Windows 11.','Faible','Faible'),
         ])
-        self._button_row([('DÉSINSTALLER ONEDRIVE',self.remove_onedrive,COLORS['danger'])])
+        comfort_keys=['mouse_accel_off','explorer_tweaks','widgets_off','edge_background_off','copilot_off','classic_context']
+        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(comfort_keys),COLORS['success']),
+                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(comfort_keys),COLORS['panel2']),
+                          ('DÉSINSTALLER ONEDRIVE',self.remove_onedrive,COLORS['danger'])])
 
     def _page_startup(self):
         self._hero('Démarrage','Inventorie les entrées Run du compte actuel. Retire uniquement ce que tu reconnais.',COLORS['gold'])
