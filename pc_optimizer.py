@@ -269,7 +269,7 @@ class WindowsSettings:
             return self.reg.HKEY_CURRENT_USER,r'Software\Microsoft\DirectX\UserGpuPreferences',spec['name']
         if spec.get('id') in ('nagle_tcp','nagle_ack'):
             path=str(spec.get('path') or '')
-            prefix=r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\'
+            prefix='SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\'
             if not path.startswith(prefix):raise ValueError('Interface TCP non autorisée.')
             name='TCPNoDelay' if spec['id']=='nagle_tcp' else 'TcpAckFrequency'
             return self.reg.HKEY_LOCAL_MACHINE,path,name
