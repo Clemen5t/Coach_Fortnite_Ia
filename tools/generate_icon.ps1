@@ -37,7 +37,7 @@ $inner.AddPolygon([System.Drawing.Point[]]@(
 ))
 $g.FillPath($cyan,$inner)
 
-$font=New-Object System.Drawing.Font 'Segoe UI',62,[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel
+$font=[System.Drawing.Font]::new('Segoe UI',62,[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel)
 $fmt=New-Object System.Drawing.StringFormat
 $fmt.Alignment=[System.Drawing.StringAlignment]::Center
 $fmt.LineAlignment=[System.Drawing.StringAlignment]::Center
