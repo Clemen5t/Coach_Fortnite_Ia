@@ -195,4 +195,66 @@ class HealthScoreTests(unittest.TestCase):
         self.assertLess(score,30)
         self.assertEqual(score,sum(breakdown.values()))
 
+
+class GameProfileTests(unittest.TestCase):
+    def test_fortnite_ini_patch_is_idempotent(self):
+        original=(
+            '[/Script/FortniteGame.FortGameUserSettings]\n'
+            'bUseVSync=True\n'
+            'FrameRateLimit=240.000000\n\n'
+            '[ScalabilityGroups]\n'
+            'sg.ShadowQuality=3\n'
+        )
+        patched=pc._patch_ini_text(original,pc.FORTNITE_COMPETITIVE_SETTINGS)
+        patched2=pc._patch_ini_text(patched,pc.FORTNITE_COMPETITIVE_SETTINGS)
+        self.assertEqual(patched,patched2)
+        values={}
+        section=''
+        for raw in patched.splitlines():
+            line=raw.strip()
+            if line.startswith('[') and line.endswith(']'):
+                section=line[1:-1];continue
+            if '=' in line:
+                k,v=line.split('=',1);values[(section,k)]=v
+        self.assertEqual(values[('/Script/FortniteGame.FortGameUserSettings','bUseVSync')],'False')
+        self.assertEqual(values[('/Script/FortniteGame.FortGameUserSettings','FrameRateLimit')],'0.000000')
+        self.assertEqual(values[('ScalabilityGroups','sg.ShadowQuality')],'0')
+
+    def test_gaming_score_rewards_profile_and_real_benchmark(self):
+        scan={
+            'settings':{'feature_states':{'game':True,'captures':True,'balanced':True}},
+            'health':{'pending_reboot':False},
+            'network':{'status':'online','rss':True},
+            'bios':{'hints':[]},
+            'game_profiles':{'fortnite':{
+                'installed':True,'registry_total':5,'registry_ok':5,
+                'config_total':14,'config_ok':14,'config_exists':True
+            }}
+        }
+        bench=[{
+            'avg_fps':400,'one_percent_low':300,'point_one_percent_low':220,
+            'duration_seconds':60,'stutters_33ms':0
+        }]
+        with patch.object(pc,'benchmark_history',return_value=bench):
+            score,breakdown,rec=pc.gaming_score_scan(scan)
+        self.assertEqual(score,100)
+        self.assertEqual(sum(breakdown.values()),100)
+
+    def test_gaming_score_does_not_award_unmeasured_benchmark(self):
+        scan={
+            'settings':{'feature_states':{'game':True,'captures':True,'balanced':True}},
+            'health':{'pending_reboot':False},
+            'network':{'status':'online','rss':True},
+            'bios':{'hints':[]},
+            'game_profiles':{'fortnite':{
+                'installed':True,'registry_total':5,'registry_ok':5,
+                'config_total':14,'config_ok':14,'config_exists':True
+            }}
+        }
+        with patch.object(pc,'benchmark_history',return_value=[]):
+            score,breakdown,rec=pc.gaming_score_scan(scan)
+        self.assertEqual(score,80)
+        self.assertEqual(breakdown['Benchmark réel'],0)
+        self.assertTrue(any(x.get('title')=='Benchmark Fortnite manquant' for x in rec))
+
 if __name__=='__main__':unittest.main()
