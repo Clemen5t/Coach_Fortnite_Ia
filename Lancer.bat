@@ -60,10 +60,16 @@ if errorlevel 1 (
   goto end
 )
 if "%SILENT%"=="0" call :ensure_shortcut
-rem Windows Script Host peut etre bloque (erreur 800A0046). Le raccourci pointe donc
-rem directement vers Lancer.bat au lieu de passer par un fichier .vbs.
+".venv\Scripts\python.exe" coach.py
+goto end
+
+:ensure_shortcut
+rem Ne pas cibler directement un .bat dans un .lnk : certains Windows/SmartScreen
+rem le refusent avec "Windows ne parvient pas a acceder...".
+rem Le raccourci cible cmd.exe et lui demande d'executer Lancer.bat.
 if exist "%~dp0CoachFortnite.vbs" del /q "%~dp0CoachFortnite.vbs" >nul 2>&1
-powershell.exe -NoProfile -Command "$ErrorActionPreference='Stop';$app=($env:COACH_DIR).TrimEnd('\');$ico=Join-Path $app 'CoachFortnite.ico';if(!(Test-Path $ico)){Add-Type -AssemblyName System.Drawing;$b=[System.Drawing.Bitmap]::new(64,64);$g=[System.Drawing.Graphics]::FromImage($b);$g.Clear([System.Drawing.Color]::FromArgb(16,24,39));$f=[System.Drawing.Font]::new('Segoe UI',24,[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel);$br=[System.Drawing.SolidBrush]::new([System.Drawing.Color]::White);$g.DrawString('CF',$f,$br,4,15);$h=$b.GetHicon();$i=[System.Drawing.Icon]::FromHandle($h);$fs=[System.IO.File]::Open($ico,[System.IO.FileMode]::Create);$i.Save($fs);$fs.Dispose();$br.Dispose();$f.Dispose();$g.Dispose();$b.Dispose()};$desk=[Environment]::GetFolderPath('Desktop');$ws=New-Object -ComObject WScript.Shell;$s=$ws.CreateShortcut((Join-Path $desk 'Coach Fortnite.lnk'));$s.TargetPath=(Join-Path $app 'Lancer.bat');$s.Arguments='--silent';$s.WorkingDirectory=$app;$s.IconLocation=$ico+',0';$s.Description='Acolyte Fortnite - IA locale';$s.WindowStyle=7;$s.Save()" >nul 2>&1
+powershell.exe -NoProfile -Command "$ErrorActionPreference='Stop';$app=($env:COACH_DIR).TrimEnd('\');$ico=Join-Path $app 'CoachFortnite.ico';if(!(Test-Path $ico)){Add-Type -AssemblyName System.Drawing;$b=[System.Drawing.Bitmap]::new(64,64);$g=[System.Drawing.Graphics]::FromImage($b);$g.Clear([System.Drawing.Color]::FromArgb(16,24,39));$f=[System.Drawing.Font]::new('Segoe UI',24,[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel);$br=[System.Drawing.SolidBrush]::new([System.Drawing.Color]::White);$g.DrawString('CF',$f,$br,4,15);$h=$b.GetHicon();$i=[System.Drawing.Icon]::FromHandle($h);$fs=[System.IO.File]::Open($ico,[System.IO.FileMode]::Create);$i.Save($fs);$fs.Dispose();$br.Dispose();$f.Dispose();$g.Dispose();$b.Dispose()};$desk=[Environment]::GetFolderPath('Desktop');$ws=New-Object -ComObject WScript.Shell;$lnk=Join-Path $desk 'Coach Fortnite.lnk';$s=$ws.CreateShortcut($lnk);$s.TargetPath=$env:ComSpec;$bat=Join-Path $app 'Lancer.bat';$s.Arguments='/d /c '+[char]34+[char]34+$bat+[char]34+' --silent'+[char]34;$s.WorkingDirectory=$app;$s.IconLocation=$ico+',0';$s.Description='Acolyte Fortnite - IA locale';$s.WindowStyle=7;$s.Save()" >nul 2>&1
+if errorlevel 1 echo Attention : impossible de recreer le raccourci du Bureau.
 exit /b
 
 :end
