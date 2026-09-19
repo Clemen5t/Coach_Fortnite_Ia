@@ -1577,6 +1577,21 @@ class Coach:
 
 if __name__=='__main__':
     if os.name!='nt':raise SystemExit('Cette version est destinée à Windows.')
+    if '--self-test-file' in sys.argv:
+        idx=sys.argv.index('--self-test-file')
+        if idx+1>=len(sys.argv):raise SystemExit(2)
+        target=Path(sys.argv[idx+1])
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_text(
+            json.dumps({
+                'ok':True,'version':VERSION,'frozen':FROZEN,
+                'bundle_dir':str(BUNDLE_DIR),'install_dir':str(INSTALL_DIR),
+                'pc_optimizer':pc_optimizer is not None,'customtkinter':ctk is not None,
+                'psutil':psutil is not None
+            },ensure_ascii=False,indent=2),
+            encoding='utf-8'
+        )
+        raise SystemExit(0)
     try:ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:pass
     root=tk.Tk(); Coach(root); root.mainloop()
