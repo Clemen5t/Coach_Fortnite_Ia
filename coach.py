@@ -555,6 +555,176 @@ class PCPremiumUI:
         else:
             self._action_card('Scan matériel & Windows','Lance un scan complet pour remplir le score, identifier les réglages utiles et éviter les tweaks inutiles.','À lancer','Élevé','Nul',command=self.scan_full,button='SCANNER')
 
+
+    def show_score_explanation(self):
+        if not self.last_scan:
+            return messagebox.showinfo('Score Acolyte','Lance d’abord un scan complet.')
+        text=self.last_scan.get('score_explanation') or pc_optimizer.score_explanation(self.last_scan)
+        self._show_result('Pourquoi ce score ?',text)
+
+    def _page_analysis(self):
+        self._hero('Analyse complète','Un seul parcours pour vérifier matériel, Windows, stockage, réseau, démarrage, jeux, versions installées, températures et dernier benchmark.',COLORS['cyan'])
+        self._button_row([
+            ('✦ ANALYSER MON PC',self.scan_full,COLORS['cyan2']),
+            ('POURQUOI LE SCORE ?',self.show_score_explanation,COLORS['purple']),
+            ('MONITORING',lambda:self.show('monitoring'),COLORS['panel2']),
+            ('HISTORIQUE',lambda:self.show('history'),COLORS['panel2'])
+        ])
+        if not self.last_scan:
+            self._action_card('Analyse en attente','Lance le scan complet. Aucune optimisation n’est appliquée pendant cette analyse.','Lecture seule','Diagnostic','Nul',command=self.scan_full,button='ANALYSER')
+            return
+        data=self.last_scan
+        telemetry=data.get('telemetry') or {}
+        startup=data.get('startup_detail') or {}
+        versions=data.get('versions') or {}
+        comp=data.get('benchmark_comparison')
+        thermal=telemetry.get('thermal_detail') or 'Températures non disponibles sans capteur compatible.'
+        self._action_card('Matériel & températures',
+            f"CPU {telemetry.get('cpu_percent','?')} % • GPU {telemetry.get('gpu_percent','?')} % • RAM {telemetry.get('ram_percent','?')} %\n{thermal}",
+            'Mesuré','Diagnostic','Nul',command=lambda:self.show('monitoring'),button='DÉTAILS')
+        self._action_card('Démarrage Windows',startup.get('summary','État non chargé'),
+            'Mesuré','Démarrage','Nul',command=lambda:self.show('startup'),button='VOIR')
+        gpu_rows=versions.get('gpu') or []
+        if isinstance(gpu_rows,dict):gpu_rows=[gpu_rows]
+        gpu_text=' • '.join(f"{x.get('Name','GPU')} pilote {x.get('DriverVersion','?')}" for x in gpu_rows[:2]) or 'Version GPU non disponible'
+        self._action_card('Versions installées',gpu_text+'\nBIOS : '+str((versions.get('bios') or {}).get('SMBIOSBIOSVersion','?')),
+            'Local','Maintenance','Nul',command=lambda:self.show('updates'),button='MISES À JOUR')
+        if isinstance(comp,dict) and comp.get('verdict'):
+            self._action_card('Benchmark avant / après',str(comp.get('verdict')),
+                'Mesuré','FPS / stabilité','Nul',command=lambda:self.show('games'),button='BENCHMARKS')
+        self._action_card('Explication du score',data.get('score_explanation',''),
+            'Transparent','Mesuré','Nul',command=self.show_score_explanation,button='OUVRIR')
+
+    def _page_monitoring(self):
+        self._hero('Monitoring matériel','Lecture locale CPU, GPU, RAM, stockage et températures quand Windows ou un provider matériel les expose. Aucune température n’est inventée.',COLORS['success'])
+        telemetry=((self.last_scan or {}).get('telemetry') or {})
+        storage=((self.last_scan or {}).get('storage_reliability') or [])
+        self._button_row([
+            ('↻ ACTUALISER LES CAPTEURS',self.refresh_monitoring,COLORS['cyan2']),
+            ('OVERLAY '+('ON' if self.overlay_window is not None else 'OFF'),self.toggle_overlay,COLORS['purple']),
+            ('BENCHMARK JEU',lambda:self.show('games'),COLORS['panel2'])
+        ])
+        values=[
+            ('CPU',f"{telemetry.get('cpu_percent','—')} %",f"Fréquence {telemetry.get('cpu_freq_mhz','—')} MHz",COLORS['cyan']),
+            ('GPU',f"{telemetry.get('gpu_percent','—')} %",f"VRAM utilisée {telemetry.get('gpu_memory_mb','—')} Mo",COLORS['purple2']),
+            ('RAM',f"{telemetry.get('ram_percent','—')} %",f"{telemetry.get('ram_used_gb','—')} Go utilisés",COLORS['success']),
+            ('DISQUE C:',f"{telemetry.get('disk_percent','—')} %",'Occupation du volume système',COLORS['gold']),
+            ('CPU TEMP',f"{telemetry.get('cpu_temp_c','—')} °C",'Capteur réel si disponible',COLORS['warning']),
+            ('GPU TEMP',f"{telemetry.get('gpu_temp_c','—')} °C",f"Hotspot {telemetry.get('gpu_hotspot_c','—')} °C",COLORS['warning']),
+        ]
+        grid=ctk.CTkFrame(self.content,fg_color='transparent');grid.pack(fill='x',padx=8,pady=(2,8))
+        for col in range(3):grid.grid_columnconfigure(col,weight=1,uniform='mon')
+        for idx,(title,value,sub,accent) in enumerate(values):
+            card=ctk.CTkFrame(grid,fg_color='#0B111D',corner_radius=14,border_width=1,border_color='#1B2A44')
+            card.grid(row=idx//3,column=idx%3,sticky='nsew',padx=5,pady=5)
+            ctk.CTkLabel(card,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',padx=14,pady=(12,2))
+            ctk.CTkLabel(card,text=value,text_color=accent,font=ctk.CTkFont(size=20,weight='bold')).pack(anchor='w',padx=14)
+            ctk.CTkLabel(card,text=sub,text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250,justify='left').pack(anchor='w',padx=14,pady=(2,12))
+        source=telemetry.get('temperature_source') or 'indisponible'
+        self._action_card('Source des températures',
+            f"{source}. {telemetry.get('thermal_detail','Aucune mesure thermique chargée.')}",
+            'Lecture seule','Sécurité thermique','Nul')
+        for disk in storage[:4]:
+            self._action_card(str(disk.get('FriendlyName') or 'Stockage'),
+                f"Type {disk.get('MediaType','?')} • Santé {disk.get('HealthStatus','?')} • Température {disk.get('Temperature','—')} °C • Usure {disk.get('Wear','—')}",
+                'SMART / Windows','Stockage','Nul')
+
+    def refresh_monitoring(self):
+        def done(value):
+            if self.last_scan is None:self.last_scan={}
+            self.last_scan['telemetry']=value
+            self._show_result('Monitoring matériel',value)
+            self.show('monitoring')
+        self._run('Lecture des capteurs',pc_optimizer.hardware_telemetry_snapshot,done)
+
+    def toggle_overlay(self):
+        if self.overlay_window is not None:
+            try:self.overlay_window.destroy()
+            except Exception:pass
+            self.overlay_window=None;self.overlay_label=None
+            if self.current=='monitoring':self.show('monitoring')
+            return
+        top=tk.Toplevel(self.parent.winfo_toplevel())
+        top.overrideredirect(True);top.attributes('-topmost',True)
+        try:top.attributes('-alpha',0.90)
+        except Exception:pass
+        top.configure(bg='#07101F')
+        sw=top.winfo_screenwidth();top.geometry(f'350x130+{max(10,sw-370)}+40')
+        frame=tk.Frame(top,bg='#07101F',highlightbackground=COLORS['cyan'],highlightthickness=1)
+        frame.pack(fill='both',expand=True)
+        tk.Label(frame,text='ACOLYTE • OVERLAY',bg='#07101F',fg=COLORS['cyan'],font=('Segoe UI',10,'bold')).pack(anchor='w',padx=10,pady=(8,2))
+        self.overlay_label=tk.Label(frame,text='',bg='#07101F',fg=COLORS['text'],font=('Consolas',10),justify='left',anchor='w')
+        self.overlay_label.pack(fill='both',expand=True,padx=10,pady=(0,8))
+        self.overlay_window=top
+        self._update_overlay()
+        if self.current=='monitoring':self.show('monitoring')
+
+    def _update_overlay(self):
+        if self.overlay_window is None or self.overlay_label is None:return
+        try:
+            cpu=psutil.cpu_percent(interval=None) if psutil else 0
+            mem=psutil.virtual_memory().percent if psutil else 0
+            t=((self.last_scan or {}).get('telemetry') or {})
+            history=pc_optimizer.benchmark_history(1)
+            bench=history[-1] if history else {}
+            last_fps=(f"{float(bench.get('avg_fps') or 0):.0f} FPS • 1% {float(bench.get('one_percent_low') or 0):.0f} (dernier bench)"
+                      if bench else 'FPS : lance un benchmark PresentMon')
+            temp=f"CPU {t.get('cpu_temp_c','—')}°C • GPU {t.get('gpu_temp_c','—')}°C • Hotspot {t.get('gpu_hotspot_c','—')}°C"
+            self.overlay_label.configure(text=f"{last_fps}\nCPU {cpu:.0f}% • RAM {mem:.0f}%\n{temp}")
+        except Exception:pass
+
+    def _page_history(self):
+        self._hero('Historique des modifications','Chaque réglage suivi peut être relu. Une restauration individuelle refuse d’écraser une valeur qui a changé depuis.',COLORS['gold'])
+        rows=pc_optimizer.optimizer_history(60)
+        self._button_row([('↻ ACTUALISER',lambda:self.show('history'),COLORS['cyan2']),('RESTAURER TOUT',self.restore,COLORS['danger'])])
+        if not rows:
+            self._action_card('Historique vide','Aucune modification suivie par Acolyte 2.5 n’a encore été enregistrée.','Journal','Nul','Nul')
+            return
+        shown=0
+        for row in reversed(rows):
+            if shown>=30:break
+            kind=row.get('kind')
+            if kind not in ('setting_change','checkpoint','rollback','auto_profile'):continue
+            shown+=1
+            restored=bool(row.get('restored_at'))
+            desc=f"{row.get('timestamp','')} • {row.get('summary','')}"
+            if kind=='setting_change':
+                spec=row.get('spec') or {}
+                desc+=f"\nRéglage : {spec.get('id') or spec.get('name') or spec.get('kind')}"
+            if restored:desc+=f"\nRestauré : {row.get('restored_at')}"
+            command=None if restored or kind!='setting_change' else (lambda eid=row.get('id'):self.restore_history_event(eid))
+            self._action_card(kind.upper(),desc,'Restauré' if restored else 'Actif','Traçabilité','Faible',command=command,button='RESTAURER')
+
+    def restore_history_event(self,event_id):
+        if not messagebox.askyesno('Restauration individuelle','Restaurer uniquement ce réglage ? Acolyte vérifiera qu’il n’a pas été modifié depuis.'):return
+        self._run('Restauration individuelle',lambda:pc_optimizer.restore_history_entry(self.app_dir,event_id),
+            lambda x:(self._show_result('Historique',x),self.show('history')))
+
+    def set_auto_rollback(self):
+        enabled=bool(self.auto_rollback_var.get())
+        pc_optimizer.set_auto_rollback(enabled)
+        self.log('Rollback automatique benchmark : '+('activé' if enabled else 'désactivé'))
+
+    def set_auto_game(self,game,enabled):
+        name=str((game or {}).get('name') or 'Jeu')
+        pc_optimizer.set_auto_game_profile(game,enabled)
+        self.log(f"Profil automatique {name} : "+('activé' if enabled else 'désactivé'))
+        if enabled and not self.busy:
+            self._run('Profil automatique '+name,
+                lambda:pc_optimizer.run_auto_game_profiles(self.app_dir,(self.last_scan or {}).get('games') or [game]),
+                lambda x:(self._show_result('Profil automatique',x),self.show('games')))
+
+    def search_windows_updates(self):
+        self._run('Recherche Windows Update',pc_optimizer.pending_windows_updates,self._windows_updates_done)
+
+    def _windows_updates_done(self,rows):
+        if not rows:
+            return self._show_result('Windows Update','Aucune mise à jour en attente remontée par Windows Update.')
+        lines=[f"{len(rows)} mise(s) à jour en attente :",'']
+        for row in rows[:30]:
+            lines.append(f"• {row.get('Title','Mise à jour')}"+(f" • KB {row.get('KB')}" if row.get('KB') else ''))
+        self._show_result('Windows Update','\n'.join(lines))
+
     def _page_performance(self):
         self._hero('Performances gaming','Des réglages réellement appliqués et relus depuis Windows après chaque redémarrage. Les options à risque ne sont jamais incluses dans le profil intelligent.',COLORS['purple2'])
         self._feature_grid([
