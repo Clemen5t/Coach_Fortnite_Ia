@@ -402,10 +402,25 @@ class PCPremiumUI:
             ctk.CTkLabel(card,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),
                 wraplength=290,justify='left').pack(anchor='w',padx=14,pady=(2,9))
             foot=ctk.CTkFrame(card,fg_color='transparent');foot.pack(fill='x',padx=14,pady=(0,12))
-            state=ctk.CTkLabel(foot,text='ÉTAT INCONNU',fg_color='#25324A',corner_radius=999,text_color='#C7D5EA',
+            state=ctk.CTkLabel(foot,text='ÉTAT NON LU',fg_color='#25324A',corner_radius=999,text_color='#C7D5EA',
                 font=ctk.CTkFont(size=8,weight='bold'),padx=8,pady=2)
             state.pack(side='left')
             self.feature_state_labels[key]=state
+            actual=self.feature_actual_states.get(key)
+            desired=((self.last_scan or {}).get('settings') or {}).get('feature_desired') or {}
+            if key not in self.pending_feature_keys:
+                if isinstance(actual,bool):self.option_vars[key].set(actual)
+                elif desired.get(key) is True:self.option_vars[key].set(True)
+            if key in self.pending_feature_keys:
+                state.configure(text='EN ATTENTE',fg_color='#5A4315',text_color='#FFD56A')
+            elif actual is True:
+                state.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
+            elif actual is False:
+                state.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
+            elif desired.get(key) is True:
+                state.configure(text='ACTIF • NON VÉRIFIÉ',fg_color='#19425A',text_color='#7DD3FC')
+            else:
+                state.configure(text='NON VÉRIFIÉ',fg_color='#30394B',text_color='#9EB0CC')
             ctk.CTkLabel(foot,text=f'Impact {impact}  •  Risque {risk}',text_color='#6F84A5',
                 font=ctk.CTkFont(size=8)).pack(side='right')
 
@@ -455,21 +470,31 @@ class PCPremiumUI:
         if self.last_scan:self._sync_feature_switches(self.last_scan)
 
     def _sync_feature_switches(self,data):
-        states=((data.get('settings') or {}).get('feature_states') or {})
+        settings=(data.get('settings') or {})
+        states=(settings.get('feature_states') or {})
+        desired=(settings.get('feature_desired') or {})
         for key,var in self.option_vars.items():
             state=states.get(key)
             self.feature_actual_states[key]=state
-            # Ne pas écraser une sélection utilisateur qui n'est pas encore appliquée.
+            # Un état non lisible ne doit jamais être interprété comme OFF.
             if key not in self.pending_feature_keys:
-                if isinstance(state,bool):var.set(state)
-                elif state is None:var.set(False)
+                if isinstance(state,bool):
+                    var.set(state)
+                elif desired.get(key) is True:
+                    var.set(True)
+                # Sinon on conserve la valeur affichée actuelle.
             label=self.feature_state_labels.get(key)
             if label:
                 if key in self.pending_feature_keys:
                     label.configure(text='EN ATTENTE',fg_color='#5A4315',text_color='#FFD56A')
-                elif state is True:label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
-                elif state is False:label.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
-                else:label.configure(text='INDISPONIBLE',fg_color='#30394B',text_color='#9EB0CC')
+                elif state is True:
+                    label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
+                elif state is False:
+                    label.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
+                elif desired.get(key) is True:
+                    label.configure(text='ACTIF • NON VÉRIFIÉ',fg_color='#19425A',text_color='#7DD3FC')
+                else:
+                    label.configure(text='NON VÉRIFIÉ',fg_color='#30394B',text_color='#9EB0CC')
 
     def _button_row(self,items):
         row=ctk.CTkFrame(self.content,fg_color='transparent');row.pack(fill='x',padx=10,pady=6)
@@ -616,6 +641,26 @@ class PCPremiumUI:
         pright=ctk.CTkFrame(pcard,fg_color='transparent');pright.pack(side='right',padx=14,pady=14)
         ctk.CTkButton(pright,text='⚡ OPTIMISER FORTNITE',command=self.optimize_fortnite,width=180,height=38,corner_radius=10,fg_color=COLORS['purple']).pack(pady=(0,6))
         ctk.CTkButton(pright,text='↶ RESTAURER FORTNITE',command=self.restore_fortnite,width=180,height=32,corner_radius=9,fg_color=COLORS['panel2']).pack()
+
+        installed_games=(self.last_scan or {}).get('games') or []
+        library=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
+        library.pack(fill='x',padx=10,pady=5)
+        ctk.CTkLabel(library,text=f'JEUX INSTALLÉS • {len(installed_games)} DÉTECTÉ(S)',text_color=COLORS['text'],font=ctk.CTkFont(size=15,weight='bold')).pack(anchor='w',padx=14,pady=(12,2))
+        ctk.CTkLabel(library,text='Epic Games, Steam et Riot sont détectés localement. Chaque jeu possède un bouton Optimiser ; Fortnite utilise en plus son profil dédié.',text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=900,justify='left').pack(anchor='w',padx=14,pady=(0,8))
+        if not installed_games:
+            ctk.CTkLabel(library,text='Aucun jeu encore chargé. Lance un Scan complet ou clique sur Détecter les jeux.',text_color=COLORS['warning'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',padx=14,pady=(0,10))
+        else:
+            game_grid=ctk.CTkFrame(library,fg_color='transparent');game_grid.pack(fill='x',padx=10,pady=(0,10))
+            for col in range(2):game_grid.grid_columnconfigure(col,weight=1,uniform='games')
+            for idx,row in enumerate(installed_games):
+                g=ctk.CTkFrame(game_grid,fg_color='#0B111D',corner_radius=12,border_width=1,border_color='#1B2A44')
+                g.grid(row=idx//2,column=idx%2,sticky='nsew',padx=4,pady=4)
+                body=ctk.CTkFrame(g,fg_color='transparent');body.pack(side='left',fill='both',expand=True,padx=12,pady=10)
+                ctk.CTkLabel(body,text=str(row.get('name') or 'Jeu'),text_color=COLORS['text'],font=ctk.CTkFont(size=12,weight='bold')).pack(anchor='w')
+                ctk.CTkLabel(body,text=str(row.get('launcher') or 'Local')+' • '+('EXE trouvé' if row.get('exe') else 'EXE à détecter'),text_color=COLORS['muted'],font=ctk.CTkFont(size=8)).pack(anchor='w',pady=(2,0))
+                cmd=(self.optimize_fortnite if str(row.get('name') or '').casefold()=='fortnite' else (lambda game=dict(row):self.optimize_game(game)))
+                ctk.CTkButton(g,text='⚡ OPTIMISER',command=cmd,width=110,height=32,corner_radius=9,fg_color=COLORS['purple']).pack(side='right',padx=10,pady=10)
+
         card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
         card.pack(fill='x',padx=10,pady=5)
         left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=14,pady=12)
@@ -654,6 +699,27 @@ class PCPremiumUI:
             self._action_card('Aucun benchmark enregistré','Installe PresentMon si nécessaire, lance Fortnite, choisis 60 secondes puis démarre le benchmark.','Prêt','Mesuré','Nul')
 
         self._button_row([('DÉTECTER LES JEUX INSTALLÉS',self.load_games,COLORS['panel2'])])
+
+    def optimize_game(self,game):
+        if self.busy:return
+        name=str((game or {}).get('name') or 'Jeu')
+        if not (game or {}).get('exe'):
+            return messagebox.showinfo(name,'Acolyte a détecté le jeu mais pas encore son exécutable principal. Relance un Scan complet après avoir lancé le jeu au moins une fois.')
+        msg=(
+            f'Optimiser {name} ?\n\n'
+            '• Mode Jeu Windows activé\n'
+            '• Captures DVR en arrière-plan désactivées\n'
+            '• GPU haute performance forcé pour l’exécutable du jeu\n\n'
+            'Aucun fichier du jeu, aucune touche, résolution ou option graphique interne ne sera modifié pour ce profil générique.'
+        )
+        if not messagebox.askyesno('Optimisation par jeu',msg):return
+        self._run('Optimisation '+name,lambda g=dict(game):pc_optimizer.apply_generic_game_profile(self.app_dir,g),self._generic_game_done)
+
+    def _generic_game_done(self,result):
+        changes='\n'.join('• '+x for x in result.get('changes',[]))
+        self._show_result('Jeu optimisé',result.get('message','Profil appliqué.')+'\n\n'+changes)
+        self.parent.after(250,self.scan_full)
+        self.parent.after(500,lambda:self.show('games'))
 
     def optimize_fortnite(self):
         if self.busy:return
@@ -891,8 +957,36 @@ class PCPremiumUI:
         self._button_row([('ANALYSER LE CHECK-UP',lambda:self._diagnostic('checkup'),COLORS['cyan2'])])
 
     def _page_bios(self):
-        self._hero('BIOS / RAM','Diagnostic uniquement : vitesse RAM configurée, profil mémoire à vérifier, UEFI et virtualisation.',COLORS['warning'])
-        self._action_card('EXPO / XMP & mémoire','Compare la vitesse configurée avec la vitesse annoncée par les barrettes. Aucun changement BIOS automatique.','Important','Élevé','Nul',command=lambda:self._diagnostic('bios'),button='ANALYSER')
+        self._hero('BIOS / RAM','Diagnostic automatique depuis Windows : fréquence réellement appliquée, cible mémoire estimée, UEFI et virtualisation.',COLORS['warning'])
+        try:
+            bios=((self.last_scan or {}).get('bios') or pc_optimizer.bios_snapshot())
+            mem=bios.get('memory_profile') or {}
+        except Exception as exc:
+            bios={};mem={'status':'ERREUR','current_mt':0,'target_mt':0,'modules':[],'reason':str(exc)}
+
+        current=mem.get('current_mt') or '?'
+        target=mem.get('target_mt') or '?'
+        status=mem.get('status') or 'ÉTAT NON CONFIRMÉ'
+        color=COLORS['warning'] if mem.get('profile_likely_off') else COLORS['success'] if status=='VITESSE CIBLE ATTEINTE' else COLORS['muted']
+        card=ctk.CTkFrame(self.content,fg_color='#0B111D',corner_radius=16,border_width=1,border_color=color)
+        card.pack(fill='x',padx=10,pady=5)
+        left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=16,pady=14)
+        ctk.CTkLabel(left,text='RAM DDR5 • DIAGNOSTIC AUTOMATIQUE',text_color=COLORS['text'],font=ctk.CTkFont(size=16,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(left,text=f'{current} MT/s ACTUELS  →  {target} MT/s CIBLE ESTIMÉE',text_color=color,font=ctk.CTkFont(size=18,weight='bold')).pack(anchor='w',pady=(5,2))
+        ctk.CTkLabel(left,text=status,text_color=color,font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w')
+        modules=mem.get('modules') or []
+        if modules:
+            detail=' • '.join(
+                f"{m.get('part_number') or 'RAM'} : {m.get('current_mt') or '?'}→{m.get('target_mt') or '?'} MT/s"
+                for m in modules[:4]
+            )
+            ctk.CTkLabel(left,text=detail,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=820,justify='left').pack(anchor='w',pady=(6,0))
+        reason=mem.get('reason') or ''
+        ctk.CTkLabel(left,text=reason,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=850,justify='left').pack(anchor='w',pady=(6,0))
+        if mem.get('profile_likely_off'):
+            ctk.CTkLabel(left,text='Acolyte a détecté la sous-fréquence sans te demander d’ouvrir le BIOS. L’activation du profil mémoire elle-même reste un réglage firmware et n’est pas forcée depuis Windows.',text_color=COLORS['warning'],font=ctk.CTkFont(size=9,weight='bold'),wraplength=850,justify='left').pack(anchor='w',pady=(7,0))
+
+        self._action_card('Rapport RAM / UEFI complet','Relit les modules, la fréquence configurée, la tension exposée par Windows et la virtualisation.','Automatique','Diagnostic','Nul',command=lambda:self._diagnostic('bios'),button='VOIR LE RAPPORT')
         self._button_row([('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])])
 
     def _page_apps(self):
@@ -1240,14 +1334,16 @@ class PCPremiumUI:
     def load_games(self):
         self._run('Détection des jeux',pc_optimizer.detected_games,self._render_games)
     def _render_games(self,rows):
-        self._clear();self._hero('Jeux détectés',f'{len(rows)} jeu(x) détecté(s) localement. Les profils seront ajoutés jeu par jeu.',COLORS['purple'])
-        if not rows:self._action_card('Aucun jeu détecté','Ajoute les autres launchers plus tard ou vérifie l’installation Epic.','Information','Nul','Nul')
+        self._clear();self._hero('Jeux détectés',f'{len(rows)} jeu(x) détecté(s) localement • Epic Games, Steam et Riot.',COLORS['purple'])
+        if not rows:self._action_card('Aucun jeu détecté','Vérifie que le launcher et le jeu sont installés puis relance la détection.','Information','Nul','Nul')
         for row in rows:
             name=row.get('name','Jeu')
+            desc=row.get('launcher','')+' • '+row.get('path','')+' • '+('EXE détecté' if row.get('exe') else 'EXE non trouvé')
             if str(name).casefold()=='fortnite':
-                self._action_card(name,row.get('launcher','')+' • '+row.get('path',''),'Profil disponible','Élevé','Faible',command=lambda:self.show('games'),button='OPTIMISER')
+                self._action_card(name,desc,'Profil Fortnite dédié','Élevé','Faible',command=lambda:self.show('games'),button='OPTIMISER')
             else:
-                self._action_card(name,row.get('launcher','')+' • '+row.get('path',''),'Détecté','Profil à venir','Nul')
+                self._action_card(name,desc,'Profil Windows par jeu','Moyen','Faible',command=lambda game=dict(row):self.optimize_game(game),button='OPTIMISER')
+        self._button_row([('REVENIR À LA PAGE JEUX',lambda:self.show('games'),COLORS['panel2'])])
         self._set_text(self.details_text,json.dumps(rows,ensure_ascii=False,indent=2))
 
     def load_apps(self):
