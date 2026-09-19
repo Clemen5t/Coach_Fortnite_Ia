@@ -1,3 +1,12 @@
+## Acolyte 2.3 — Gaming Lab & pack compétitif
+- Nouveau **Lab Gaming** : sépare les optimisations automatiques, les réglages à mesurer et les tweaks volontairement exclus.
+- Nouveau **Pack compétitif sûr** : Game Mode, captures off, plan Ryzen équilibré, souris sans accélération, alimentation réseau, RSS/TCP sain et P2P Windows Update désactivé.
+- AMD RX 7000 : recommandations guidées pour Anti-Lag / Chill / HYPR-RX sans écrire de clés Adrenalin privées non documentées.
+- Windows 11 : raccourci vers les optimisations pour jeux fenêtrés, au lieu de forcer une clé registre non documentée.
+- Fortnite : profil compétitif réversible + benchmark PresentMon + reset shader cache uniquement en dépannage.
+- Les hacks HPET/timers, NetworkThrottlingIndex forcé, désactivation de Defender/pare-feu/Windows Update, désactivation massive de services, OC/UV automatique et custom Windows automatique restent exclus.
+- Les réglages variables (HAGS, Nagle, RSC/Interrupt Moderation, VBS) restent séparés et doivent être validés par mesure avant/après.
+
 ## Acolyte 2.2 — auto-tune mesuré & recherche anti-placebo
 
 - **Auto-tune PC complet** : base Windows/GPU/réseau réversible adaptée au matériel, fréquence écran maximale détectée puis test réseau avant/après.
