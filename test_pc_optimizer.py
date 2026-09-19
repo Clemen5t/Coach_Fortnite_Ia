@@ -199,6 +199,30 @@ def healthy_scan(link='2.5 Gbps'):
         'network': {'status': 'online', 'rss': True, 'description': 'Realtek Gaming 2.5GbE Family Controller', 'link': link},
     }
 
+class MemoryAndPersistenceTests(unittest.TestCase):
+    def test_memory_part_number_detects_corsair_target(self):
+        target,confidence,profile=pc._memory_target_from_part('CMH5X16G1B52C40A2',4800)
+        self.assertEqual(target,5200)
+        self.assertEqual(confidence,'part_number')
+
+    def test_memory_profile_flags_4800_vs_5200(self):
+        data={'ram':[{
+            'PartNumber':'CMH5X16G1B52C40A2','ConfiguredClockSpeed':4800,'Speed':4800,
+            'Capacity':17179869184,'Manufacturer':'Unknown'
+        }]}
+        result=pc.memory_profile_analysis(data)
+        self.assertTrue(result['profile_likely_off'])
+        self.assertEqual(result['current_mt'],4800)
+        self.assertEqual(result['target_mt'],5200)
+
+    def test_desired_features_path_is_global_across_app_locations(self):
+        with tempfile.TemporaryDirectory() as local:
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}):
+                a=pc.optimizer_desired_path(Path(local)/'AcolyteA')
+                b=pc.optimizer_desired_path(Path(local)/'AcolyteB')
+                self.assertEqual(a,b)
+
+
 class HealthScoreTests(unittest.TestCase):
     def test_healthy_configuration_scores_100(self):
         score, rec, ok, breakdown = pc.score_scan(healthy_scan())
