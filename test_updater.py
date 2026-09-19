@@ -103,6 +103,8 @@ class RestartEnvironmentTests(unittest.TestCase):
                 seen['args']=args;seen.update(kwargs);return Dummy()
             with patch.dict(updater.os.environ,{
                 'LOCALAPPDATA':str(base/'local'),
+                'USERPROFILE':str(base),
+                'HOME':str(base),
                 '_PYI_APPLICATION_HOME_DIR':r'C:\Temp\_MEI99999',
                 '_PYI_PARENT_PROCESS_LEVEL':'1',
                 'NORMAL':'ok'
