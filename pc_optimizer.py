@@ -2020,8 +2020,22 @@ def reboot_to_firmware():
     if os.name!='nt':raise RuntimeError('Le redémarrage UEFI nécessite Windows.')
     if not is_admin():raise PermissionError('Les droits administrateur sont requis pour redémarrer vers l’UEFI.')
     out,err,code=_run(['shutdown.exe','/r','/fw','/t','0'])
-    if code:raise RuntimeError(err or out or 'Windows a refusé le redémarrage vers l’UEFI.')
+    if code:
+        detail=(err or out or 'Windows a refusé le redémarrage vers l’UEFI.').strip()
+        raise RuntimeError(f'{detail} (code {code})')
     return 'Redémarrage vers l’UEFI demandé.'
+
+def reboot_to_advanced_startup():
+    """Redémarre vers les options de démarrage avancées de Windows.
+    Sert de repli lorsque le firmware UEFI direct n'est pas disponible.
+    """
+    if os.name!='nt':raise RuntimeError('Le démarrage avancé nécessite Windows.')
+    if not is_admin():raise PermissionError('Les droits administrateur sont requis pour ouvrir le démarrage avancé.')
+    out,err,code=_run(['shutdown.exe','/r','/o','/t','0'])
+    if code:
+        detail=(err or out or 'Windows a refusé le redémarrage vers le démarrage avancé.').strip()
+        raise RuntimeError(f'{detail} (code {code})')
+    return 'Redémarrage vers le démarrage avancé demandé.'
 
 def open_panel(name):
     import webbrowser
