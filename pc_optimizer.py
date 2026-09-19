@@ -727,6 +727,238 @@ if($null -eq $cmd){'INDISPONIBLE'}else{
         'note':'Nettoyage prudent terminé. Les caches qui peuvent dégrader le premier lancement d’un jeu ont été conservés.'
     }
 
+
+def _delete_tree_files(root):
+    root=Path(root)
+    removed=0;freed=0
+    if not root.exists():return removed,freed
+    for path in sorted(root.rglob('*'),key=lambda p:len(p.parts),reverse=True):
+        try:
+            if path.is_file() and not path.is_symlink():
+                size=path.stat().st_size;path.unlink();removed+=1;freed+=size
+            elif path.is_dir():
+                try:path.rmdir()
+                except OSError:pass
+        except (OSError,PermissionError):pass
+    return removed,freed
+
+def reset_gpu_shader_cache():
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant de réinitialiser les caches shaders.')
+    local=Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData'/'Local'))
+    targets=[
+        local/'D3DSCache',
+        local/'AMD'/'DxCache',
+        local/'AMD'/'GLCache',
+        local/'AMD'/'VkCache',
+        local/'NVIDIA'/'DXCache',
+        local/'NVIDIA'/'GLCache',
+    ]
+    total_count=0;total_bytes=0;used=[]
+    for target in targets:
+        count,size=_delete_tree_files(target)
+        if count:
+            total_count+=count;total_bytes+=size;used.append(str(target))
+    return {
+        'files_removed':total_count,
+        'freed_mb':round(total_bytes/1024**2,1),
+        'locations':used,
+        'warning':'Le prochain lancement d’un jeu peut présenter des stutters temporaires pendant la recompilation des shaders.'
+    }
+
+def refresh_network_cache():
+    commands=[
+        (['ipconfig.exe','/flushdns'],'DNS'),
+        (['arp.exe','-d','*'],'ARP'),
+        (['nbtstat.exe','-R'],'NetBIOS'),
+    ]
+    result={}
+    for args,name in commands:
+        try:
+            out,err,code=_run(args,timeout=30)
+            result[name]={'ok':code==0,'detail':(out or err)[-1200:]}
+        except Exception as exc:
+            result[name]={'ok':False,'detail':str(exc)}
+    return result
+
+def optimize_disks():
+    if not is_admin():raise PermissionError('Relance Acolyte en administrateur pour optimiser les disques.')
+    out,err,code=_run(['defrag.exe','/C','/O','/U','/V'],timeout=1800)
+    if code not in (0,1):raise RuntimeError(err or out or 'Optimisation des disques échouée.')
+    return (out or err or 'Optimisation des disques terminée.')[-12000:]
+
+def repair_system_files():
+    if not is_admin():raise PermissionError('Relance Acolyte en administrateur pour réparer Windows.')
+    dism_out,dism_err,dism_code=_run(['DISM.exe','/Online','/Cleanup-Image','/RestoreHealth'],timeout=2400)
+    if dism_code!=0:raise RuntimeError('DISM a échoué : '+(dism_err or dism_out)[-3000:])
+    sfc_out,sfc_err,sfc_code=_run(['sfc.exe','/scannow'],timeout=2400)
+    if sfc_code not in (0,1,2):raise RuntimeError('SFC a échoué : '+(sfc_err or sfc_out)[-3000:])
+    return {'DISM':(dism_out or dism_err)[-5000:],'SFC':(sfc_out or sfc_err)[-5000:]}
+
+def clear_windows_history():
+    appdata=Path(os.environ.get('APPDATA',Path.home()/'AppData'/'Roaming'))
+    local=Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData'/'Local'))
+    roots=[
+        appdata/'Microsoft'/'Windows'/'Recent',
+        local/'Microsoft'/'Windows'/'Explorer',
+    ]
+    removed=0;freed=0
+    for root in roots:
+        if not root.exists():continue
+        if root.name=='Explorer':
+            candidates=list(root.glob('thumbcache_*.db'))+list(root.glob('iconcache_*.db'))
+        else:
+            candidates=[p for p in root.rglob('*') if p.is_file()]
+        for path in candidates:
+            try:
+                size=path.stat().st_size;path.unlink();removed+=1;freed+=size
+            except (OSError,PermissionError):pass
+    return {'files_removed':removed,'freed_mb':round(freed/1024**2,1),'note':'Les éléments verrouillés par Explorer sont conservés.'}
+
+SCHEDULED_TASK_BACKUP='scheduled-tasks-backup.json'
+SCHEDULED_TASKS=[
+    r'\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
+    r'\Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
+    r'\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip',
+    r'\Microsoft\Windows\Feedback\Siuf\DmClient',
+    r'\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload',
+]
+
+def optimize_scheduled_tasks(root):
+    if not is_admin():raise PermissionError('Relance Acolyte en administrateur pour modifier les tâches planifiées.')
+    rows=[]
+    for full in SCHEDULED_TASKS:
+        path,name=full.rsplit('\\',1);taskpath=path+'\\'
+        script=f"$t=Get-ScheduledTask -TaskPath '{taskpath.replace(chr(39),chr(39)*2)}' -TaskName '{name.replace(chr(39),chr(39)*2)}' -ErrorAction SilentlyContinue; if($t){{[ordered]@{{Path=$t.TaskPath;Name=$t.TaskName;State=[string]$t.State;Enabled=[bool]$t.Settings.Enabled}}}}"
+        try:data=_strict_json(script)
+        except Exception:data=None
+        if not isinstance(data,dict):continue
+        rows.append(data)
+    path=Path(root)/SCHEDULED_TASK_BACKUP
+    path.write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+    disabled=0
+    for row in rows:
+        taskpath=str(row['Path']).replace("'","''");name=str(row['Name']).replace("'","''")
+        out,err,code=_ps(f"Disable-ScheduledTask -TaskPath '{taskpath}' -TaskName '{name}' -ErrorAction Stop|Out-Null")
+        if code==0:disabled+=1
+    return f'{disabled} tâche(s) de télémétrie désactivée(s). Sauvegarde : {path}'
+
+def restore_scheduled_tasks(root):
+    path=Path(root)/SCHEDULED_TASK_BACKUP
+    if not path.exists():return 'Aucune sauvegarde de tâches planifiées.'
+    rows=json.loads(path.read_text(encoding='utf-8'))
+    restored=0
+    for row in rows:
+        if not row.get('Enabled'):continue
+        taskpath=str(row['Path']).replace("'","''");name=str(row['Name']).replace("'","''")
+        out,err,code=_ps(f"Enable-ScheduledTask -TaskPath '{taskpath}' -TaskName '{name}' -ErrorAction Stop|Out-Null")
+        if code==0:restored+=1
+    return f'{restored} tâche(s) réactivée(s).'
+
+DNS_BACKUP_NAME='dns-backup.json'
+DNS_CANDIDATES=[
+    ('Cloudflare',['1.1.1.1','1.0.0.1']),
+    ('Google',['8.8.8.8','8.8.4.4']),
+    ('Quad9',['9.9.9.9','149.112.112.112']),
+]
+
+def _dns_probe(server):
+    times=[]
+    for _ in range(3):
+        started=time.perf_counter()
+        out,err,code=_ps(f"Resolve-DnsName -Name 'www.microsoft.com' -Server '{server}' -DnsOnly -NoHostsFile -ErrorAction Stop|Out-Null",timeout=10)
+        if code==0:times.append((time.perf_counter()-started)*1000)
+    return statistics.median(times) if times else None
+
+def auto_dns(root):
+    if not is_admin():raise PermissionError('Relance Acolyte en administrateur pour changer les DNS.')
+    nic=_active_nic_info();name=str(nic.get('Name') or '')
+    if not name:raise RuntimeError('Aucune carte réseau active.')
+    safe=name.replace("'","''")
+    previous=_strict_json(f"$x=Get-DnsClientServerAddress -InterfaceAlias '{safe}' -AddressFamily IPv4 -ErrorAction Stop; @($x.ServerAddresses)")
+    if isinstance(previous,str):previous=[previous]
+    results=[]
+    for provider,servers in DNS_CANDIDATES:
+        latency=_dns_probe(servers[0]);results.append({'provider':provider,'servers':servers,'ms':latency})
+    valid=[r for r in results if r['ms'] is not None]
+    if not valid:raise RuntimeError('Aucun résolveur DNS candidat ne répond correctement.')
+    best=min(valid,key=lambda x:x['ms'])
+    Path(root,DNS_BACKUP_NAME).write_text(json.dumps({'adapter':name,'servers':previous},ensure_ascii=False,indent=2),encoding='utf-8')
+    arr=",".join("'"+x+"'" for x in best['servers'])
+    out,err,code=_ps(f"Set-DnsClientServerAddress -InterfaceAlias '{safe}' -ServerAddresses ({arr}) -ErrorAction Stop")
+    if code:raise RuntimeError(err or out or 'Changement DNS refusé.')
+    _run(['ipconfig.exe','/flushdns'])
+    return {'selected':best,'tested':results,'note':'Le DNS influence surtout la résolution de noms, pas le ping d’une partie déjà connectée.'}
+
+def restore_dns(root):
+    path=Path(root)/DNS_BACKUP_NAME
+    if not path.exists():return 'Aucune sauvegarde DNS.'
+    data=json.loads(path.read_text(encoding='utf-8'));name=str(data['adapter']).replace("'","''")
+    servers=data.get('servers') or []
+    if servers:
+        arr=",".join("'"+str(x)+"'" for x in servers)
+        script=f"Set-DnsClientServerAddress -InterfaceAlias '{name}' -ServerAddresses ({arr}) -ErrorAction Stop"
+    else:
+        script=f"Set-DnsClientServerAddress -InterfaceAlias '{name}' -ResetServerAddresses -ErrorAction Stop"
+    out,err,code=_ps(script)
+    if code:raise RuntimeError(err or out or 'Restauration DNS refusée.')
+    return 'DNS restaurés.'
+
+def set_max_refresh_rate():
+    if os.name!='nt':raise RuntimeError('Cette action nécessite Windows.')
+    from ctypes import wintypes
+    CCHDEVICENAME=32;CCHFORMNAME=32
+    class DEVMODEW(ctypes.Structure):
+        _fields_=[
+            ('dmDeviceName',wintypes.WCHAR*CCHDEVICENAME),('dmSpecVersion',wintypes.WORD),('dmDriverVersion',wintypes.WORD),
+            ('dmSize',wintypes.WORD),('dmDriverExtra',wintypes.WORD),('dmFields',wintypes.DWORD),
+            ('dmOrientation',ctypes.c_short),('dmPaperSize',ctypes.c_short),('dmPaperLength',ctypes.c_short),('dmPaperWidth',ctypes.c_short),
+            ('dmScale',ctypes.c_short),('dmCopies',ctypes.c_short),('dmDefaultSource',ctypes.c_short),('dmPrintQuality',ctypes.c_short),
+            ('dmPositionX',ctypes.c_long),('dmPositionY',ctypes.c_long),('dmDisplayOrientation',wintypes.DWORD),('dmDisplayFixedOutput',wintypes.DWORD),
+            ('dmColor',ctypes.c_short),('dmDuplex',ctypes.c_short),('dmYResolution',ctypes.c_short),('dmTTOption',ctypes.c_short),('dmCollate',ctypes.c_short),
+            ('dmFormName',wintypes.WCHAR*CCHFORMNAME),('dmLogPixels',wintypes.WORD),('dmBitsPerPel',wintypes.DWORD),
+            ('dmPelsWidth',wintypes.DWORD),('dmPelsHeight',wintypes.DWORD),('dmDisplayFlags',wintypes.DWORD),('dmDisplayFrequency',wintypes.DWORD),
+            ('dmICMMethod',wintypes.DWORD),('dmICMIntent',wintypes.DWORD),('dmMediaType',wintypes.DWORD),('dmDitherType',wintypes.DWORD),
+            ('dmReserved1',wintypes.DWORD),('dmReserved2',wintypes.DWORD),('dmPanningWidth',wintypes.DWORD),('dmPanningHeight',wintypes.DWORD)]
+    ENUM_CURRENT_SETTINGS=-1;CDS_UPDATEREGISTRY=1;DISP_CHANGE_SUCCESSFUL=0;DM_DISPLAYFREQUENCY=0x400000
+    user32=ctypes.windll.user32
+    current=DEVMODEW();current.dmSize=ctypes.sizeof(DEVMODEW)
+    if not user32.EnumDisplaySettingsW(None,ENUM_CURRENT_SETTINGS,ctypes.byref(current)):
+        raise RuntimeError('Impossible de lire le mode d’affichage actuel.')
+    best=int(current.dmDisplayFrequency);mode=0
+    while True:
+        candidate=DEVMODEW();candidate.dmSize=ctypes.sizeof(DEVMODEW)
+        if not user32.EnumDisplaySettingsW(None,mode,ctypes.byref(candidate)):break
+        mode+=1
+        if candidate.dmPelsWidth==current.dmPelsWidth and candidate.dmPelsHeight==current.dmPelsHeight and candidate.dmBitsPerPel==current.dmBitsPerPel:
+            best=max(best,int(candidate.dmDisplayFrequency))
+    if best<=int(current.dmDisplayFrequency):
+        return f'Écran principal déjà au maximum détecté : {current.dmDisplayFrequency} Hz.'
+    current.dmDisplayFrequency=best;current.dmFields|=DM_DISPLAYFREQUENCY
+    result=user32.ChangeDisplaySettingsW(ctypes.byref(current),CDS_UPDATEREGISTRY)
+    if result!=DISP_CHANGE_SUCCESSFUL:raise RuntimeError('Windows a refusé le changement de fréquence : '+str(result))
+    return f'Écran principal réglé de manière persistante sur {best} Hz.'
+
+def uninstall_onedrive():
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant cette opération.')
+    system=Path(os.environ.get('SystemRoot',r'C:\Windows'))
+    candidates=[system/'SysWOW64'/'OneDriveSetup.exe',system/'System32'/'OneDriveSetup.exe']
+    setup=next((x for x in candidates if x.exists()),None)
+    if setup is None:raise RuntimeError('OneDriveSetup.exe introuvable.')
+    out,err,code=_run([str(setup),'/uninstall'],timeout=180)
+    if code not in (0,None):raise RuntimeError(err or out or 'Désinstallation OneDrive échouée.')
+    return 'Désinstallation OneDrive lancée. Cette action n’est pas annulée par Restaurer ; OneDrive peut être réinstallé depuis Microsoft.'
+
+def clear_windows_update_cache():
+    if not is_admin():raise PermissionError('Relance Acolyte en administrateur.')
+    services=('wuauserv','bits')
+    for service in services:_run(['net.exe','stop',service],timeout=30)
+    root=Path(os.environ.get('SystemRoot',r'C:\Windows'))/'SoftwareDistribution'/'Download'
+    count,size=_delete_tree_files(root)
+    for service in reversed(services):_run(['net.exe','start',service],timeout=30)
+    return {'files_removed':count,'freed_mb':round(size/1024**2,1),'note':'Cache de téléchargement Windows Update nettoyé ; Windows reconstruira ce qui est nécessaire.'}
+
 def network_diagnostics():
     data=_strict_json("""$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select -First 1
 if($null -eq $nic){[ordered]@{status='Aucune interface réseau active'}}else{
