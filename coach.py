@@ -223,7 +223,9 @@ class PCPremiumUI:
         ('apps','▦','Logiciels'),('research','⌕','Méthode'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
-        self.option_vars={k:tk.BooleanVar(value=False) for k in pc_optimizer.OPTIONS}
+        try:self.persistent_feature_desired=pc_optimizer.desired_features(self.app_dir)
+        except Exception:self.persistent_feature_desired={}
+        self.option_vars={k:tk.BooleanVar(value=bool(self.persistent_feature_desired.get(k))) for k in pc_optimizer.OPTIONS}
         self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={};self.feature_actual_states={};self.pending_feature_keys=set()
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
@@ -347,6 +349,9 @@ class PCPremiumUI:
         self.quick_state.configure(state='normal');self.quick_state.delete('1.0','end');self.quick_state.insert('end',text);self.quick_state.configure(state='disabled')
 
     def _clear(self):
+        # Les widgets d'état appartiennent à la page courante : ne jamais garder
+        # de référence Tk vers un widget détruit après navigation.
+        self.feature_state_labels.clear()
         for child in self.content.winfo_children():child.destroy()
 
     def show(self,key):
@@ -407,7 +412,7 @@ class PCPremiumUI:
             state.pack(side='left')
             self.feature_state_labels[key]=state
             actual=self.feature_actual_states.get(key)
-            desired=((self.last_scan or {}).get('settings') or {}).get('feature_desired') or {}
+            desired=((self.last_scan or {}).get('settings') or {}).get('feature_desired') or self.persistent_feature_desired or {}
             if key not in self.pending_feature_keys:
                 if isinstance(actual,bool):self.option_vars[key].set(actual)
                 elif desired.get(key) is True:self.option_vars[key].set(True)
@@ -458,6 +463,8 @@ class PCPremiumUI:
 
     def _pending_applied(self,result,keys):
         for key in keys:self.pending_feature_keys.discard(key)
+        try:self.persistent_feature_desired=pc_optimizer.desired_features(self.app_dir)
+        except Exception:pass
         self._show_result('Changements appliqués',result)
         # Une seule analyse après tout le lot, pas à chaque interrupteur.
         self.parent.after(250,self.scan_full)
@@ -466,13 +473,20 @@ class PCPremiumUI:
         for key in keys:
             self.pending_feature_keys.discard(key)
             state=self.feature_actual_states.get(key)
-            if isinstance(state,bool):self.option_vars[key].set(state)
+            if isinstance(state,bool):
+                self.option_vars[key].set(state)
+            else:
+                # Si Windows n'a pas encore été relu, revenir à l'intention
+                # persistante connue, sinon OFF. Ne jamais laisser la sélection
+                # utilisateur annulée affichée comme active.
+                self.option_vars[key].set(bool(self.persistent_feature_desired.get(key)))
         if self.last_scan:self._sync_feature_switches(self.last_scan)
 
     def _sync_feature_switches(self,data):
         settings=(data.get('settings') or {})
         states=(settings.get('feature_states') or {})
         desired=(settings.get('feature_desired') or {})
+        self.persistent_feature_desired=dict(desired)
         for key,var in self.option_vars.items():
             state=states.get(key)
             self.feature_actual_states[key]=state
@@ -498,8 +512,14 @@ class PCPremiumUI:
 
     def _button_row(self,items):
         row=ctk.CTkFrame(self.content,fg_color='transparent');row.pack(fill='x',padx=10,pady=6)
-        for text,cmd,color in items:
-            ctk.CTkButton(row,text=text,command=cmd,fg_color=color,height=34,corner_radius=9).pack(side='left',padx=(0,6))
+        per_line=3 if self.compact_ui else 4
+        for idx,(text,cmd,color) in enumerate(items):
+            line_idx=idx//per_line
+            while len(row.winfo_children())<=line_idx:
+                line=ctk.CTkFrame(row,fg_color='transparent')
+                line.pack(fill='x',pady=(0,4) if line_idx else 0)
+            line=row.winfo_children()[line_idx]
+            ctk.CTkButton(line,text=text,command=cmd,fg_color=color,height=34,corner_radius=9).pack(side='left',padx=(0,6))
 
     def _page_dashboard(self):
         self._hero('Centre de contrôle','Une vue unique du matériel, de Windows, du réseau et des recommandations prioritaires.',COLORS['cyan'])
@@ -987,7 +1007,24 @@ class PCPremiumUI:
             ctk.CTkLabel(left,text='Acolyte a détecté la sous-fréquence sans te demander d’ouvrir le BIOS. L’activation du profil mémoire elle-même reste un réglage firmware et n’est pas forcée depuis Windows.',text_color=COLORS['warning'],font=ctk.CTkFont(size=9,weight='bold'),wraplength=850,justify='left').pack(anchor='w',pady=(7,0))
 
         self._action_card('Rapport RAM / UEFI complet','Relit les modules, la fréquence configurée, la tension exposée par Windows et la virtualisation.','Automatique','Diagnostic','Nul',command=lambda:self._diagnostic('bios'),button='VOIR LE RAPPORT')
-        self._button_row([('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])])
+        bios_buttons=[('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])]
+        if mem.get('profile_likely_off'):
+            bios_buttons.insert(0,('↻ REDÉMARRER VERS UEFI',self.reboot_to_uefi,COLORS['warning']))
+        self._button_row(bios_buttons)
+
+    def reboot_to_uefi(self):
+        if self.busy:return
+        mem=(((self.last_scan or {}).get('bios') or {}).get('memory_profile') or {})
+        current=mem.get('current_mt') or '?';target=mem.get('target_mt') or '?'
+        msg=(
+            f'Acolyte confirme actuellement {current} MT/s et estime la cible à {target} MT/s.\n\n'
+            'Windows ne peut pas activer proprement EXPO/XMP à lui seul : fréquence, tension et timings sont initialisés avant Windows.\n\n'
+            'Acolyte peut redémarrer directement dans l’UEFI pour que tu n’aies pas à chercher la touche au démarrage. '
+            'Aucune valeur BIOS ne sera changée automatiquement.\n\nRedémarrer maintenant vers l’UEFI ?'
+        )
+        if not messagebox.askyesno('Assistant RAM / EXPO',msg):return
+        try:pc_optimizer.reboot_to_firmware()
+        except Exception as exc:self._error('Redémarrage UEFI',exc)
 
     def _page_apps(self):
         self._hero('Logiciels','Liste fermée d’applications Windows facultatives. La désinstallation est séparée de la restauration des tweaks.',COLORS['gold'])
@@ -1020,7 +1057,11 @@ class PCPremiumUI:
     def _page_usb(self):
         self._hero('USB & périphériques','Diagnostic de périphériques et test optionnel sans suspension USB sur secteur. Aucun gain de latence n’est garanti.',COLORS['cyan'])
         self._action_card('Suspension sélective USB','À tester uniquement en cas de déconnexions de périphériques.','Dépannage','Faible','Faible','usb')
-        self._button_row([('LISTER LES PÉRIPHÉRIQUES',lambda:self._diagnostic('usb'),COLORS['cyan2'])])
+        self._button_row([
+            ('✓ APPLIQUER',lambda:self._apply_pending_features(['usb']),COLORS['success']),
+            ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(['usb']),COLORS['panel2']),
+            ('LISTER LES PÉRIPHÉRIQUES',lambda:self._diagnostic('usb'),COLORS['cyan2'])
+        ])
 
     def _page_generic(self):self._hero('Section','Contenu en cours de chargement.')
 
