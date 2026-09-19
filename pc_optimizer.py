@@ -471,7 +471,32 @@ $props=@(Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyCont
             v4=value.get('rsc_ipv4');v6=value.get('rsc_ipv6')
             if v4 is not None or v6 is not None:
                 args=[]
-                if v4 is not None:args.append('-IPv4Enabled 
+                if v4 is not None:
+                    args.append('-IPv4Enabled '+('$True' if bool(v4) else '$False'))
+                if v6 is not None:
+                    args.append('-IPv6Enabled '+('$True' if bool(v6) else '$False'))
+                out,err,code=_ps(f"Set-NetAdapterRsc -Name '{name}' {' '.join(args)} -NoRestart -ErrorAction Stop")
+                if code:raise RuntimeError(err or out or 'Modification RSC refusée.')
+            for row in value.get('interrupt') or []:
+                keyword=str(row.get('RegistryKeyword') or '').strip().replace("'","''")
+                display=str(row.get('DisplayValue') or '').strip()
+                registry=row.get('RegistryValue')
+                if not keyword:continue
+                if display:
+                    safe_display=display.replace("'","''")
+                    out,err,code=_ps(f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -DisplayValue '{safe_display}' -NoRestart -ErrorAction Stop")
+                elif registry not in (None,'',[]):
+                    vals=registry if isinstance(registry,list) else [registry]
+                    vals=[str(x) for x in vals]
+                    pv="@("+",".join("'"+x.replace("'","''")+"'" for x in vals)+")"
+                    out,err,code=_ps(f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -RegistryValue {pv} -NoRestart -ErrorAction Stop")
+                else:
+                    continue
+                if code:raise RuntimeError(err or out or 'Modification de la modération des interruptions refusée.')
+        else:raise ValueError('Type de réglage invalide.')
+        if kind not in ('service','net_eee','net_low_latency') and self.read(spec) != value:
+            raise RuntimeError('La vérification du réglage a échoué.')
+
 
 def _save_state(path, data):
     path = Path(path)
