@@ -793,8 +793,8 @@ class PCPremiumUI:
                 self.log('Réapplication après redémarrage : '+names)
                 self.parent.after(250,lambda d=list(drift):self._run(
                     'Réapplication des optimisations persistantes',
-                    lambda:pc_optimizer.apply_selected(d,self.app_dir),
-                    lambda result:self._after_mutation('Persistance des optimisations',result)))
+                    lambda:pc_optimizer.reapply_persistent_features(self.app_dir,d),
+                    self._persistent_reapply_done))
         games=data.get('games') or [];startup=data.get('startup_count')
         breakdown=data.get('score_breakdown') or {}
         mini=' • '.join(f"{k.split()[0]} {v}" for k,v in list(breakdown.items())[:3])
@@ -802,6 +802,22 @@ class PCPremiumUI:
         self._set_text(self.summary_text,self._scan_summary(data))
         self._set_text(self.details_text,json.dumps(data,ensure_ascii=False,indent=2))
         if self.current=='dashboard':self.show('dashboard')
+
+    def _persistent_reapply_done(self,result):
+        applied=result.get('applied') or []
+        failed=result.get('failed') or []
+        lines=[]
+        if applied:
+            lines.append('Réappliqué : '+', '.join(pc_optimizer.OPTIONS[k][0] for k in applied if k in pc_optimizer.OPTIONS))
+        if failed:
+            lines.append('Non réappliqué automatiquement :')
+            for item in failed:
+                lines.append('• '+item.get('name','Réglage')+' — '+item.get('error','Erreur inconnue'))
+            lines.append('')
+            lines.append('La persistance des réglages en échec a été désactivée pour éviter la même erreur à chaque démarrage.')
+        if not lines:lines.append('Aucune réapplication nécessaire.')
+        self._show_result('Persistance des optimisations','\n'.join(lines))
+        self.parent.after(250,self.scan_full)
 
     def _scan_summary(self,data):
         lines=[f"Score Santé du PC : {data.get('score',0)}/100",
