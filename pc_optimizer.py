@@ -3518,6 +3518,110 @@ def full_scan():
     return scan
 
 
+def start_live_game_capture(process_name=FORTNITE_PROCESS):
+    """Démarre une capture PresentMon continue pour l'overlay.
+    La capture est opt-in et s'arrête avec le jeu ou à la fermeture de l'overlay.
+    """
+    status=presentmon_status()
+    if not status.get('installed'):raise RuntimeError('PresentMon n’est pas installé.')
+    if os.name!='nt':raise RuntimeError('Overlay FPS disponible uniquement sous Windows.')
+    if not is_admin():raise PermissionError('L’overlay FPS PresentMon nécessite Acolyte en administrateur.')
+    process=game_process_running(process_name)
+    if not process.get('running'):raise RuntimeError('Fortnite n’est pas lancé.')
+    BENCH_DATA_DIR.mkdir(parents=True,exist_ok=True)
+    stamp=time.strftime('%Y%m%d-%H%M%S')
+    csv_path=BENCH_DATA_DIR/f'overlay-live-{stamp}.csv'
+    target_args=['--process_id',str(process['pid'])] if process.get('pid') else ['--process_name',process_name]
+    args=[
+        str(PRESENTMON_EXE),*target_args,'--output_file',str(csv_path),
+        '--terminate_on_proc_exit','--stop_existing_session','--session_name','AcolyteOverlay',
+        '--set_circular_buffer_size','4096','--v1_metrics','--exclude_dropped',
+        '--no_track_gpu','--no_track_input','--no_track_display','--no_console_stats'
+    ]
+    flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
+    proc=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=flags)
+    return {'process':proc,'csv_path':str(csv_path),'process_name':process_name,'started_at':time.time()}
+
+def stop_live_game_capture(session):
+    if not isinstance(session,dict):return
+    proc=session.get('process')
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:proc.kill()
+        except Exception:pass
+
+def live_game_capture_metrics(session,window_seconds=2.0):
+    """Lit la fin du CSV PresentMon sans charger toute la session en mémoire."""
+    import csv,io
+    if not isinstance(session,dict):return None
+    path=Path(str(session.get('csv_path') or ''))
+    if not path.exists() or path.stat().st_size<100:return None
+    try:
+        with path.open('rb') as f:
+            header=f.readline().decode('utf-8-sig',errors='replace').rstrip('\r\n')
+            size=f.seek(0,2)
+            start=max(len(header)+2,size-2*1024*1024)
+            f.seek(start)
+            tail=f.read().decode('utf-8',errors='replace')
+        lines=tail.splitlines()
+        if start>len(header)+2 and lines:lines=lines[1:]
+        text=header+'\n'+'\n'.join(lines)
+        reader=csv.DictReader(io.StringIO(text))
+        fields=reader.fieldnames or []
+        frame_col=next((x for x in ('msBetweenPresents','MsBetweenPresents','FrameTime','frameTime') if x in fields),None)
+        time_col=next((x for x in ('TimeInSeconds','TimeInMs') if x in fields),None)
+        if not frame_col:return None
+        groups={}
+        for row in reader:
+            try:ft=float(str(row.get(frame_col,'')).replace(',','.'))
+            except (TypeError,ValueError):continue
+            if not 0.05<=ft<=1000:continue
+            ts=None
+            if time_col:
+                try:
+                    ts=float(str(row.get(time_col,'')).replace(',','.'))
+                    if time_col=='TimeInMs':ts/=1000.0
+                except (TypeError,ValueError):ts=None
+            key=(str(row.get('ProcessID') or ''),str(row.get('SwapChainAddress') or 'unknown'))
+            groups.setdefault(key,[]).append((ts,ft))
+        if not groups:return None
+        rows=max(groups.values(),key=len)
+        timed=[x for x in rows if x[0] is not None]
+        if timed:
+            last=max(x[0] for x in timed)
+            recent=[ft for ts,ft in timed if ts>=last-max(.5,float(window_seconds))]
+        else:
+            recent=[ft for _,ft in rows[-1200:]]
+        if len(recent)<30:return None
+        # Écarte uniquement des artefacts ETW extrêmes isolés ; garde les vrais stutters.
+        median=statistics.median(recent)
+        if median<3.5 and len(recent)>=5:
+            cleaned=[]
+            extreme=max(120.0,median*50)
+            normal=max(12.0,median*6)
+            for i,v in enumerate(recent):
+                if 0<i<len(recent)-1 and v>=extreme and recent[i-1]<=normal and recent[i+1]<=normal:
+                    continue
+                cleaned.append(v)
+            recent=cleaned
+        avg_ft=statistics.mean(recent)
+        fps_values=[1000.0/x for x in recent if x>0]
+        return {
+            'fps':1000.0/avg_ft if avg_ft else 0.0,
+            'one_percent_low':_percentile(fps_values,1.0) or 0.0,
+            'frametime_ms':avg_ft,
+            'p99_ms':_percentile(recent,99.0) or 0.0,
+            'samples':len(recent),
+            'running':True,
+        }
+    except (OSError,ValueError):
+        return None
+
+
+
 if __name__=='__main__':
     if len(sys.argv)>=3 and sys.argv[1]=='--elevated-batch':
         raise SystemExit(_elevated_batch_main(sys.argv[2]))
