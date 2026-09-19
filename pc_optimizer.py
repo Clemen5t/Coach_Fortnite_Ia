@@ -2952,6 +2952,526 @@ def open_benchmark_folder():
     return str(BENCH_DATA_DIR)
 
 
+
+# === ACOLYTE 2.5 — OBSERVABILITÉ, AUDIT, PROFILS AUTO ET BENCHMARK A/B ===
+
+AUDIT_LOG_FILE=optimizer_base_dir()/'audit-log.json'
+AUTO_PROFILE_FILE=optimizer_base_dir()/'auto-game-profiles.json'
+BENCH_POLICY_FILE=optimizer_base_dir()/'benchmark-policy.json'
+PENDING_ROLLBACK_FILE=optimizer_base_dir()/'pending-rollback.json'
+LAST_SCAN_FILE=optimizer_base_dir()/'last-scan.json'
+
+def _read_json_file(path,default):
+    try:
+        value=json.loads(Path(path).read_text(encoding='utf-8'))
+        return value
+    except (FileNotFoundError,ValueError,OSError,TypeError):
+        return default
+
+def _write_json_file(path,value):
+    _save_state(Path(path),value)
+    return value
+
+def _json_safe(value):
+    try:
+        json.dumps(value,ensure_ascii=False)
+        return value
+    except (TypeError,ValueError):
+        return str(value)
+
+def _audit_rows():
+    rows=_read_json_file(AUDIT_LOG_FILE,[])
+    return rows if isinstance(rows,list) else []
+
+def _audit_append(kind,summary,spec=None,before=None,after=None,metadata=None):
+    row={
+        'id':uuid.uuid4().hex,
+        'timestamp':time.strftime('%Y-%m-%d %H:%M:%S'),
+        'epoch':time.time(),
+        'kind':str(kind),
+        'summary':str(summary)[:300],
+        'spec':_json_safe(spec) if spec is not None else None,
+        'before':_json_safe(before) if before is not None else None,
+        'after':_json_safe(after) if after is not None else None,
+        'metadata':_json_safe(metadata or {}),
+        'restored_at':None,
+    }
+    rows=_audit_rows();rows.append(row)
+    _write_json_file(AUDIT_LOG_FILE,rows[-500:])
+    return row
+
+def optimizer_history(limit=100):
+    rows=_audit_rows()
+    return rows[-max(1,min(500,int(limit))):]
+
+_legacy_apply_changes_v25=_apply_changes
+
+def _apply_changes(root,changes,backend):
+    snapshots=[]
+    for spec,target in changes:
+        try:snapshots.append((spec,target,backend.read(spec)))
+        except Exception:snapshots.append((spec,target,None))
+    result=_legacy_apply_changes_v25(root,changes,backend)
+    for spec,target,before in snapshots:
+        if before!=target:
+            ident=str(spec.get('id') or spec.get('name') or spec.get('kind') or 'réglage')
+            _audit_append('setting_change','Modification '+ident,spec,before,target)
+    return result
+
+def restore_history_entry(root,event_id,backend=None):
+    backend=backend or WindowsSettings()
+    rows=_audit_rows()
+    event=next((x for x in rows if x.get('id')==event_id),None)
+    if not event:raise ValueError('Événement d’historique introuvable.')
+    if event.get('restored_at'):return {'restored':False,'message':'Ce changement a déjà été restauré.'}
+    spec=event.get('spec')
+    if not isinstance(spec,dict):raise ValueError('Cet événement ne contient pas de réglage restaurable.')
+    before=event.get('before');after=event.get('after')
+    current=backend.read(spec)
+    if current!=after:
+        raise RuntimeError('Le réglage a changé depuis cette action ; Acolyte refuse de l’écraser automatiquement.')
+    backend.write(spec,before)
+    if backend.read(spec)!=before:raise RuntimeError('La restauration individuelle n’a pas pu être vérifiée.')
+    event['restored_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+    _write_json_file(AUDIT_LOG_FILE,rows)
+    try:
+        state=_load_state(root,backend)
+        for entry in list(state.get('entries') or []):
+            if entry.get('spec')==spec and entry.get('applied')==after:
+                state['entries'].remove(entry)
+        _save_state(optimizer_state_path(root),state)
+    except Exception:
+        pass
+    return {'restored':True,'message':'Réglage restauré individuellement.','event':event}
+
+def create_optimization_checkpoint(label='Optimisation'):
+    row=_audit_append('checkpoint',label,metadata={'checkpoint':True})
+    policy=benchmark_policy()
+    policy['last_checkpoint_id']=row['id']
+    _write_json_file(BENCH_POLICY_FILE,policy)
+    return row['id']
+
+def _checkpoint_epoch(checkpoint_id):
+    for row in reversed(_audit_rows()):
+        if row.get('id')==checkpoint_id and row.get('kind')=='checkpoint':
+            return float(row.get('epoch') or 0)
+    return 0.0
+
+def restore_since_checkpoint(root,checkpoint_id,backend=None):
+    backend=backend or WindowsSettings()
+    start=_checkpoint_epoch(checkpoint_id)
+    if not start:raise ValueError('Point de restauration introuvable.')
+    candidates=[
+        row for row in _audit_rows()
+        if row.get('kind')=='setting_change' and float(row.get('epoch') or 0)>=start
+        and not row.get('restored_at') and isinstance(row.get('spec'),dict)
+    ]
+    restored=[];skipped=[]
+    for row in reversed(candidates):
+        try:
+            current=backend.read(row['spec'])
+            if current!=row.get('after'):
+                skipped.append({'id':row.get('id'),'reason':'valeur modifiée depuis'})
+                continue
+            backend.write(row['spec'],row.get('before'))
+            row['restored_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+            restored.append(row.get('id'))
+        except Exception as exc:
+            skipped.append({'id':row.get('id'),'reason':str(exc)})
+    all_rows=_audit_rows()
+    by_id={x.get('id'):x for x in candidates}
+    for row in all_rows:
+        changed=by_id.get(row.get('id'))
+        if changed and changed.get('restored_at'):row['restored_at']=changed['restored_at']
+    _write_json_file(AUDIT_LOG_FILE,all_rows)
+    try:
+        state=_load_state(root,backend)
+        restored_specs=[x.get('spec') for x in candidates if x.get('id') in restored]
+        state['entries']=[e for e in state.get('entries',[]) if e.get('spec') not in restored_specs]
+        _save_state(optimizer_state_path(root),state)
+    except Exception:
+        pass
+    return {'restored':len(restored),'skipped':skipped,'checkpoint_id':checkpoint_id}
+
+def benchmark_policy():
+    data=_read_json_file(BENCH_POLICY_FILE,{})
+    if not isinstance(data,dict):data={}
+    data.setdefault('auto_rollback',False)
+    data.setdefault('last_checkpoint_id',None)
+    return data
+
+def set_auto_rollback(enabled):
+    data=benchmark_policy();data['auto_rollback']=bool(enabled)
+    _write_json_file(BENCH_POLICY_FILE,data)
+    return data
+
+def auto_rollback_enabled():
+    return bool(benchmark_policy().get('auto_rollback'))
+
+def compare_benchmark_pair(before,after):
+    raw=compare_game_benchmarks(before,after)
+    duration_before=max(1.0,float(before.get('duration_seconds') or 1))
+    duration_after=max(1.0,float(after.get('duration_seconds') or 1))
+    sb=float(before.get('stutters_33ms') or 0)*60.0/duration_before
+    sa=float(after.get('stutters_33ms') or 0)*60.0/duration_after
+    raw['stutters_per_min']={'before':sb,'after':sa,'delta':sa-sb,'percent':((sa-sb)/sb*100) if sb else None}
+
+    avg_pct=float((raw.get('avg_fps') or {}).get('percent') or 0)
+    low_pct=float((raw.get('one_percent_low') or {}).get('percent') or 0)
+    low01_pct=float((raw.get('point_one_percent_low') or {}).get('percent') or 0)
+    stutter_delta=sa-sb
+    regression=(avg_pct<=-3.0 or low_pct<=-5.0 or low01_pct<=-8.0 or (stutter_delta>=2.0 and sa>sb*1.25))
+    improvement=(avg_pct>=3.0 and low_pct>=2.0 and stutter_delta<=1.0) or (low_pct>=7.0 and avg_pct>=-1.0 and stutter_delta<=0)
+    verdict='régression mesurée' if regression else 'amélioration mesurée' if improvement else 'variation faible / à confirmer'
+    return {'verdict':verdict,'regression':regression,'improvement':improvement,'metrics':raw}
+
+def latest_before_after_pair():
+    rows=_benchmark_history_read()
+    if len(rows)<2:return None
+    after=None
+    for idx in range(len(rows)-1,-1,-1):
+        if str(rows[idx].get('label') or '').casefold().startswith('après'):
+            after=rows[idx]
+            for j in range(idx-1,-1,-1):
+                if str(rows[j].get('label') or '').casefold().startswith('avant'):
+                    return {'before':rows[j],'after':after,'comparison':compare_benchmark_pair(rows[j],after)}
+    return {'before':rows[-2],'after':rows[-1],'comparison':compare_benchmark_pair(rows[-2],rows[-1])}
+
+def schedule_regression_rollback(reason,checkpoint_id=None,include_fortnite=True):
+    payload={
+        'created_at':time.strftime('%Y-%m-%d %H:%M:%S'),
+        'reason':str(reason)[:600],
+        'checkpoint_id':checkpoint_id or benchmark_policy().get('last_checkpoint_id'),
+        'include_fortnite':bool(include_fortnite),
+    }
+    _write_json_file(PENDING_ROLLBACK_FILE,payload)
+    return payload
+
+def pending_regression_rollback():
+    data=_read_json_file(PENDING_ROLLBACK_FILE,None)
+    return data if isinstance(data,dict) else None
+
+def process_pending_regression_rollback(root):
+    pending=pending_regression_rollback()
+    if not pending:return {'pending':False}
+    if game_process_running().get('running'):
+        return {'pending':True,'waiting_for_game_exit':True,'reason':pending.get('reason')}
+    results={'pending':False,'reason':pending.get('reason'),'steps':[]}
+    if pending.get('include_fortnite'):
+        try:
+            status=fortnite_profile_status()
+            if status.get('profile_applied'):
+                results['steps'].append({'fortnite':restore_fortnite_profile(root)})
+        except Exception as exc:
+            results['steps'].append({'fortnite_error':str(exc)})
+    checkpoint=pending.get('checkpoint_id')
+    if checkpoint:
+        try:results['steps'].append({'windows':restore_since_checkpoint(root,checkpoint)})
+        except Exception as exc:results['steps'].append({'windows_error':str(exc)})
+    try:PENDING_ROLLBACK_FILE.unlink()
+    except OSError:pass
+    _audit_append('rollback','Rollback automatique après régression benchmark',metadata=results)
+    return results
+
+def evaluate_latest_benchmark_policy():
+    pair=latest_before_after_pair()
+    if not pair:return {'available':False}
+    result={'available':True,**pair}
+    comparison=pair['comparison']
+    if comparison.get('regression') and auto_rollback_enabled():
+        result['rollback_scheduled']=schedule_regression_rollback(
+            'Benchmark APRÈS inférieur au benchmark AVANT selon les seuils Acolyte.',
+            benchmark_policy().get('last_checkpoint_id'),
+            include_fortnite=True)
+    return result
+
+def _sensor_rows_from_hardware_monitor():
+    if os.name!='nt':return []
+    script=r"""
+$rows=@()
+foreach($ns in @('root\LibreHardwareMonitor','root\OpenHardwareMonitor')){
+ try{
+  $s=Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop |
+   Where-Object {$_.SensorType -in @('Temperature','Load','Clock','Power')} |
+   Select-Object Name,Identifier,SensorType,Value,Min,Max
+  if($s){$rows=@($s);break}
+ }catch{}
+}
+$rows
+"""
+    try:return _rows(_strict_json(script))
+    except Exception:return []
+
+def hardware_telemetry_snapshot():
+    result={
+        'timestamp':time.strftime('%Y-%m-%d %H:%M:%S'),
+        'cpu_percent':None,'cpu_freq_mhz':None,'ram_percent':None,'ram_used_gb':None,
+        'disk_percent':None,'gpu_percent':None,'gpu_memory_mb':None,
+        'cpu_temp_c':None,'gpu_temp_c':None,'gpu_hotspot_c':None,
+        'sensor_source':'Windows/psutil','temperature_source':'indisponible',
+        'thermal_warning':False,'thermal_detail':'',
+    }
+    try:
+        import psutil
+        result['cpu_percent']=float(psutil.cpu_percent(interval=0.15))
+        freq=psutil.cpu_freq()
+        result['cpu_freq_mhz']=float(freq.current) if freq else None
+        mem=psutil.virtual_memory()
+        result['ram_percent']=float(mem.percent);result['ram_used_gb']=round(mem.used/1024**3,2)
+        try:result['disk_percent']=float(psutil.disk_usage(os.environ.get('SystemDrive','C:')+'\\').percent)
+        except Exception:pass
+    except Exception:pass
+    if os.name=='nt':
+        try:
+            gpu=_strict_json(r"""
+$eng=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue |
+ Where-Object {$_.Name -match 'engtype_3D'} | Select-Object -ExpandProperty UtilizationPercentage)
+$mem=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory -ErrorAction SilentlyContinue |
+ Select-Object -ExpandProperty DedicatedUsage)
+[ordered]@{
+ util=if($eng.Count){[math]::Min(100,[math]::Round((($eng|Measure-Object -Sum).Sum),1))}else{$null}
+ memory=if($mem.Count){[math]::Round((($mem|Measure-Object -Maximum).Maximum/1MB),0)}else{$null}
+}""") or {}
+            result['gpu_percent']=gpu.get('util');result['gpu_memory_mb']=gpu.get('memory')
+        except Exception:pass
+    sensors=_sensor_rows_from_hardware_monitor()
+    if sensors:
+        result['temperature_source']='Libre/Open Hardware Monitor'
+        temps=[x for x in sensors if str(x.get('SensorType')).casefold()=='temperature']
+        def first_temp(patterns):
+            for row in temps:
+                name=str(row.get('Name') or '')
+                ident=str(row.get('Identifier') or '')
+                hay=(name+' '+ident).casefold()
+                if any(p in hay for p in patterns):
+                    try:return float(row.get('Value'))
+                    except (TypeError,ValueError):pass
+            return None
+        result['gpu_hotspot_c']=first_temp(('hot spot','hotspot','junction'))
+        result['gpu_temp_c']=first_temp(('gpu core','gpu package'))
+        result['cpu_temp_c']=first_temp(('cpu package','tctl','tdie','cpu core'))
+    gt=result.get('gpu_hotspot_c') or result.get('gpu_temp_c')
+    ct=result.get('cpu_temp_c')
+    warnings=[]
+    if gt is not None and gt>=100:warnings.append(f'GPU/Hotspot élevé ({gt:.0f} °C)')
+    if ct is not None and ct>=90:warnings.append(f'CPU élevé ({ct:.0f} °C)')
+    result['thermal_warning']=bool(warnings)
+    result['thermal_detail']=' • '.join(warnings) if warnings else 'Aucun seuil thermique d’alerte dépassé parmi les capteurs disponibles.'
+    return result
+
+def storage_reliability_snapshot():
+    if os.name!='nt':return []
+    try:
+        data=_strict_json(r"""
+@(
+ Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  $d=$_
+  $r=$null
+  try{$r=$d|Get-StorageReliabilityCounter -ErrorAction Stop}catch{}
+  [ordered]@{
+   FriendlyName=$d.FriendlyName;MediaType=[string]$d.MediaType;HealthStatus=[string]$d.HealthStatus;
+   OperationalStatus=[string]$d.OperationalStatus;
+   Temperature=if($r){$r.Temperature}else{$null};
+   Wear=if($r){$r.Wear}else{$null};
+   ReadErrorsTotal=if($r){$r.ReadErrorsTotal}else{$null};
+   WriteErrorsTotal=if($r){$r.WriteErrorsTotal}else{$null}
+  }
+ }
+)
+""")
+        return _rows(data)
+    except Exception:return []
+
+def installed_versions_snapshot():
+    if os.name!='nt':return {}
+    try:
+        return _strict_json(r"""
+$gpu=@(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+ Where-Object {$_.Name -notmatch 'Parsec|Basic Display'} |
+ Select-Object Name,DriverVersion,DriverDate)
+$bios=Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1 SMBIOSBIOSVersion,ReleaseDate,Manufacturer
+$board=Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1 Manufacturer,Product
+[ordered]@{gpu=$gpu;bios=$bios;board=$board;note='Versions installées lues localement. Acolyte ne déclare pas une version comme la plus récente sans source en ligne vérifiée.'}
+""") or {}
+    except Exception as exc:return {'error':str(exc)}
+
+def pending_windows_updates():
+    if os.name!='nt':raise RuntimeError('Recherche Windows Update disponible uniquement sous Windows.')
+    data=_strict_json(r"""
+$session=New-Object -ComObject Microsoft.Update.Session
+$searcher=$session.CreateUpdateSearcher()
+$result=$searcher.Search("IsInstalled=0 and IsHidden=0")
+@($result.Updates | ForEach-Object {
+ [ordered]@{
+  Title=$_.Title;Type=[string]$_.Type;
+  IsDownloaded=[bool]$_.IsDownloaded;
+  RebootRequired=[bool]$_.RebootRequired;
+  KB=(@($_.KBArticleIDs)-join ',')
+ }
+})
+""")
+    return _rows(data)
+
+def startup_analysis():
+    rows=startup_items()
+    names=[str(x.get('name') or 'Sans nom') for x in rows]
+    return {
+        'count':len(rows),'items':rows,
+        'names':names,
+        'summary':('Aucune entrée Run détectée.' if not rows else f"{len(rows)} entrée(s) Run détectée(s) : "+', '.join(names[:10])+('…' if len(names)>10 else '')),
+        'note':'Acolyte liste les entrées ; il ne suppose pas qu’un programme est inutile sans ton choix.'
+    }
+
+def score_explanation(scan):
+    lines=[f"Score global : {int(scan.get('score') or 0)}/100",
+           f"Santé Windows : {int(scan.get('health_score') or 0)}/100",
+           f"Gaming : {int(scan.get('gaming_score') or 0)}/100",'']
+    sysmax={'Sécurité Windows':25,'Performances gaming':30,'Stockage / entretien':20,'Démarrage':10,'Réseau':10,'État Windows':5}
+    lines.append('DÉTAIL DES POINTS SYSTÈME')
+    for key,maxv in sysmax.items():
+        if key in (scan.get('score_breakdown') or {}):
+            value=int(scan['score_breakdown'][key]);lost=maxv-value
+            lines.append(f"• {key}: {value}/{maxv}"+(f" (-{lost})" if lost else ''))
+    lines.append('')
+    lines.append('DÉTAIL GAMING')
+    gamemax={'Windows gaming':30,'Profil Fortnite':35,'RAM / BIOS':15,'Benchmark réel':20}
+    for key,maxv in gamemax.items():
+        if key in (scan.get('gaming_breakdown') or {}):
+            value=int(scan['gaming_breakdown'][key]);lost=maxv-value
+            lines.append(f"• {key}: {value}/{maxv}"+(f" (-{lost})" if lost else ''))
+    rec=scan.get('recommendations') or []
+    if rec:
+        lines.extend(['','CAUSES MESURÉES / À VÉRIFIER'])
+        for item in rec[:12]:lines.append('• '+str(item.get('title') or '')+' — '+str(item.get('detail') or ''))
+    lines.extend(['','Le score ne mesure ni le prix ni la puissance théorique du matériel.'])
+    return '\n'.join(lines)
+
+def _auto_profile_state():
+    data=_read_json_file(AUTO_PROFILE_FILE,{})
+    return data if isinstance(data,dict) else {}
+
+def auto_game_profile_enabled(game):
+    return bool((_auto_profile_state().get(_safe_game_key(game)) or {}).get('enabled'))
+
+def set_auto_game_profile(game,enabled):
+    game=dict(game or {})
+    key=_safe_game_key(game);data=_auto_profile_state()
+    if enabled:
+        data[key]={'enabled':True,'game':{
+            'name':game.get('name'),'launcher':game.get('launcher'),'path':game.get('path'),
+            'exe':game.get('exe'),'profile':game.get('profile')}}
+    else:data.pop(key,None)
+    _write_json_file(AUTO_PROFILE_FILE,data)
+    return bool(enabled)
+
+def auto_game_profiles():
+    return _auto_profile_state()
+
+def _process_running_for_game(game):
+    exe=str(game.get('exe') or '')
+    target=Path(exe).name.casefold() if exe else ''
+    if not target:return False
+    try:
+        import psutil
+        for proc in psutil.process_iter(['name']):
+            try:
+                if str(proc.info.get('name') or '').casefold()==target:return True
+            except (psutil.NoSuchProcess,psutil.AccessDenied):pass
+    except Exception:pass
+    return False
+
+def run_auto_game_profiles(root,games=None):
+    prefs=_auto_profile_state()
+    if not prefs:return {'actions':[]}
+    current={_safe_game_key(x):dict(x) for x in (games or detected_games())}
+    actions=[]
+    for key,pref in prefs.items():
+        if not pref.get('enabled'):continue
+        game=current.get(key) or dict(pref.get('game') or {})
+        if not game:continue
+        name=str(game.get('name') or 'Jeu')
+        running=_process_running_for_game(game)
+        try:
+            if name.casefold()=='fortnite':
+                status=fortnite_profile_status()
+                if not running and status.get('installed') and not status.get('profile_applied'):
+                    result=apply_fortnite_profile(root)
+                    actions.append({'game':name,'action':'profile_applied','result':result.get('message')})
+            else:
+                status=generic_game_profile_status(game)
+                if running and not status.get('applied'):
+                    result=apply_generic_game_profile(root,game)
+                    actions.append({'game':name,'action':'profile_applied','result':result.get('message')})
+        except Exception as exc:
+            actions.append({'game':name,'action':'error','error':str(exc)})
+    if actions:_audit_append('auto_profile','Profils automatiques exécutés',metadata={'actions':actions})
+    return {'actions':actions}
+
+def last_scan_snapshot():
+    data=_read_json_file(LAST_SCAN_FILE,{})
+    return data if isinstance(data,dict) else {}
+
+def ai_pc_context():
+    scan=last_scan_snapshot()
+    telemetry=hardware_telemetry_snapshot()
+    bench=benchmark_history(1)
+    system=(scan.get('system') or {})
+    rec=scan.get('recommendations') or []
+    lines=['CONTEXTE PC MESURÉ PAR ACOLYTE (ne pas inventer au-delà de ces données) :']
+    if system:
+        lines.append(f"CPU={system.get('cpu','?')} | GPU={system.get('gpu','?')} | RAM={system.get('ram','?')} Go")
+    lines.append(
+        f"Charge CPU={telemetry.get('cpu_percent','?')}% | RAM={telemetry.get('ram_percent','?')}% | "
+        f"GPU={telemetry.get('gpu_percent','?')}% | CPU temp={telemetry.get('cpu_temp_c','indispo')} °C | "
+        f"GPU temp={telemetry.get('gpu_temp_c','indispo')} °C | hotspot={telemetry.get('gpu_hotspot_c','indispo')} °C")
+    if bench:
+        b=bench[-1]
+        lines.append(f"Dernier benchmark Fortnite: {float(b.get('avg_fps') or 0):.1f} FPS, 1% low {float(b.get('one_percent_low') or 0):.1f}, P99 {float(b.get('p99_frametime_ms') or 0):.2f} ms.")
+    if rec:
+        lines.append('Recommandations actuelles: '+' | '.join(str(x.get('title') or '') for x in rec[:5]))
+    return '\n'.join(lines)[:2800]
+
+_legacy_gaming_score_scan_v25=gaming_score_scan
+def gaming_score_scan(scan):
+    score,breakdown,rec=_legacy_gaming_score_scan_v25(scan)
+    history=benchmark_history(1)
+    if history:
+        b=history[-1]
+        avg=float(b.get('avg_fps') or 0);low=float(b.get('one_percent_low') or 0)
+        low01=float(b.get('point_one_percent_low') or 0)
+        dur=max(1.0,float(b.get('duration_seconds') or 1))
+        spm=float(b.get('stutters_33ms') or 0)*60.0/dur
+        for item in rec:
+            if item.get('title')=='Stabilité Fortnite à améliorer':
+                item['detail']=f"Dernier benchmark : {avg:.1f} FPS moyens, 1% low {low:.1f}, 0,1% low {low01:.1f}, {spm:.1f} frame(s) >33 ms/min."
+    return score,breakdown,rec
+
+_legacy_full_scan_v25=full_scan
+def full_scan():
+    scan=_legacy_full_scan_v25()
+    try:scan['telemetry']=hardware_telemetry_snapshot()
+    except Exception as exc:scan['telemetry']={'error':str(exc)}
+    try:scan['storage_reliability']=storage_reliability_snapshot()
+    except Exception as exc:scan['storage_reliability']=[{'error':str(exc)}]
+    try:scan['versions']=installed_versions_snapshot()
+    except Exception as exc:scan['versions']={'error':str(exc)}
+    try:
+        startup=startup_analysis();scan['startup_detail']=startup
+        for item in scan.get('recommendations') or []:
+            if item.get('section')=='startup':
+                item['detail']=startup.get('summary')+' '+startup.get('note')
+    except Exception as exc:scan['startup_detail']={'error':str(exc)}
+    try:
+        pair=latest_before_after_pair()
+        scan['benchmark_comparison']=pair['comparison'] if pair else None
+    except Exception as exc:scan['benchmark_comparison']={'error':str(exc)}
+    scan['score_explanation']=score_explanation(scan)
+    scan['optimizer_history_count']=len(_audit_rows())
+    try:_write_json_file(LAST_SCAN_FILE,scan)
+    except Exception:pass
+    return scan
+
+
 if __name__=='__main__':
     if len(sys.argv)>=3 and sys.argv[1]=='--elevated-batch':
         raise SystemExit(_elevated_batch_main(sys.argv[2]))
