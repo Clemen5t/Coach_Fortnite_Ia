@@ -1,0 +1,79 @@
+name: Build and release Acolyte EXE
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - VERSION
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Generate Acolyte icon
+        shell: pwsh
+        run: ./tools/generate_icon.ps1
+
+      - name: Build one-file EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean Acolyte.spec
+          if (!(Test-Path "dist/Acolyte.exe")) { throw "Acolyte.exe was not created" }
+
+      - name: Smoke test packaged EXE
+        shell: pwsh
+        run: |
+          $marker = Join-Path $env:RUNNER_TEMP "acolyte-self-test.json"
+          if (Test-Path $marker) { Remove-Item $marker -Force }
+          $p = Start-Process -FilePath ".\dist\Acolyte.exe" -ArgumentList "--self-test-file", ('"' + $marker + '"') -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Acolyte.exe self-test exited with $($p.ExitCode)" }
+          if (!(Test-Path $marker)) { throw "Acolyte.exe self-test marker missing" }
+          $test = Get-Content $marker -Raw | ConvertFrom-Json
+          if (!$test.ok -or !$test.frozen -or !$test.pc_optimizer -or !$test.customtkinter -or !$test.psutil) {
+            throw "Packaged runtime self-test failed: $($test | ConvertTo-Json -Compress)"
+          }
+          Write-Host ($test | ConvertTo-Json -Compress)
+
+      - name: Create SHA-256 file
+        shell: pwsh
+        run: |
+          $hash=(Get-FileHash ".\dist\Acolyte.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  Acolyte.exe" | Set-Content ".\dist\Acolyte.exe.sha256" -Encoding ascii
+          Get-Item ".\dist\Acolyte.exe" | Select-Object Name,Length
+          Get-Content ".\dist\Acolyte.exe.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Acolyte-windows-x64
+          path: |
+            dist/Acolyte.exe
+            dist/Acolyte.exe.sha256
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version=(Get-Content VERSION -Raw).Trim()
+          $tag="v$version"
+          if (gh release view $tag --repo "${{ github.repository }}" *> $null) {
+            gh release upload $tag ".\dist\Acolyte.exe" ".\dist\Acolyte.exe.sha256" --clobber --repo "${{ github.repository }}"
+          } else {
+            gh release create $tag ".\dist\Acolyte.exe" ".\dist\Acolyte.exe.sha256" --title "Acolyte $version" --notes "Version Windows x64 autonome. Démarre avec droits administrateur via le manifeste Windows." --latest --repo "${{ github.repository }}"
+          }
