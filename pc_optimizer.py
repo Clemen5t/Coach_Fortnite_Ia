@@ -530,8 +530,10 @@ def _apply_changes(root, changes, backend):
         # Lire tous les réglages avant toute modification.
         before = [(spec, value, backend.read(spec)) for spec, value in changes]
         touched = []
+        current_spec=None
         try:
             for spec, value, previous in before:
+                current_spec=spec
                 if previous == value:continue
                 entry = next((e for e in state['entries'] if e['spec'] == spec), None)
                 if entry is not None and previous != entry.get('applied'):
@@ -559,8 +561,12 @@ def _apply_changes(root, changes, backend):
                     entry.update(applied=previous, pending=False)
                 except Exception as rollback:failures.append(str(rollback))
             _save_state(path, state)
-            if failures:raise RuntimeError('Échec ; restauration partielle. Sauvegarde conservée. '+str(exc)+' / '+'; '.join(failures)) from exc
-            raise RuntimeError('Échec ; changements de cette opération annulés. '+str(exc)) from exc
+            setting=''
+            if current_spec:
+                ident=current_spec.get('id') or current_spec.get('name') or current_spec.get('kind') or 'réglage inconnu'
+                setting=' Réglage en échec : '+str(ident)+'.'
+            if failures:raise RuntimeError('Échec ; restauration partielle. Sauvegarde conservée.'+setting+' '+str(exc)+' / '+'; '.join(failures)) from exc
+            raise RuntimeError('Échec ; changements de cette opération annulés.'+setting+' '+str(exc)) from exc
         return {'changed': len(touched), 'backup': str(path)}
 
 
@@ -702,13 +708,48 @@ def _feature_changes(option, backend):
     return unique
 
 ADMIN_OPTIONS={
-    'usb','hags_on','fast_startup_off','hibernation_off','sysmain_off',
+    'balanced','usb','hags_on','fast_startup_off','hibernation_off','sysmain_off',
     'net_power','net_eee','nagle_off','p2p_off','amd_gpu','telemetry_min',
     'vbs_off','background_services','tcp_baseline'
 }
 
-def options_require_admin(options):
-    return any(str(x) in ADMIN_OPTIONS for x in (options or []))
+def _spec_requires_admin(spec, backend=None):
+    kind=str(spec.get('kind') or '')
+    if kind in ('power','usb','hibernate','service','net_power','net_eee','tcp_baseline'):
+        return True
+    if kind=='registry':
+        ident=spec.get('id')
+        if ident in ('nagle_tcp','nagle_ack'):
+            return True
+        target=REG_SETTINGS.get(ident)
+        if target and len(target)==3 and target[0]=='HKLM':
+            return True
+    return False
+
+def option_requires_admin(option, backend=None):
+    option=str(option)
+    if option not in OPTIONS:return False
+    backend=backend or WindowsSettings()
+    try:
+        return any(_spec_requires_admin(spec,backend) for spec,_ in _feature_changes(option,backend))
+    except Exception:
+        # Fallback conservateur : mieux vaut demander l'UAC que laisser Windows refuser.
+        return option in ADMIN_OPTIONS
+
+def options_require_admin(options, backend=None):
+    backend=backend or WindowsSettings()
+    return any(option_requires_admin(x,backend) for x in (options or []))
+
+def _is_access_denied_error(exc):
+    msg=str(exc).casefold()
+    return (
+        isinstance(exc,PermissionError) or
+        'winerror 5' in msg or
+        'accès refusé' in msg or
+        'access denied' in msg or
+        'permission denied' in msg or
+        'erreur 5' in msg
+    )
 
 def _write_result_json(path,data):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
@@ -779,14 +820,28 @@ def _apply_batch_elevated(root,enable,disable,timeout=240):
     raise TimeoutError('La demande administrateur n’a pas terminé. Vérifie si une fenêtre UAC attend une réponse.')
 
 def apply_batch(root,enable=None,disable=None):
-    """Applique un lot avec une seule élévation UAC quand Windows l’exige."""
+    """Applique un lot avec une seule élévation UAC quand Windows l’exige.
+    Si Windows refuse malgré le précontrôle, Acolyte réessaie automatiquement en administrateur.
+    """
     enable=[x for x in (enable or []) if x in OPTIONS]
     disable=[x for x in (disable or []) if x in OPTIONS]
     all_options=list(dict.fromkeys(enable+disable))
     if not all_options:return 'Aucun changement demandé.'
-    if is_admin() or not options_require_admin(all_options):
+    if is_admin():
         return _apply_batch_local(root,enable,disable)
-    return _apply_batch_elevated(root,enable,disable)
+
+    backend=WindowsSettings()
+    if options_require_admin(all_options,backend):
+        return _apply_batch_elevated(root,enable,disable)
+
+    try:
+        return _apply_batch_local(root,enable,disable)
+    except Exception as exc:
+        if _is_access_denied_error(exc):
+            # Certains builds/politiques Windows protègent aussi des réglages normalement utilisateur.
+            # Le premier essai a été rollbacké par _apply_changes : on peut réessayer proprement élevé.
+            return _apply_batch_elevated(root,enable,disable)
+        raise
 
 def option_states(backend=None):
     backend=backend or WindowsSettings()
