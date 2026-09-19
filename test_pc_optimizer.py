@@ -107,6 +107,29 @@ class StateSyncTests(unittest.TestCase):
                 self.assertTrue(str(path).startswith(str(Path(local))))
                 self.assertNotEqual(path.parent,Path(app))
 
+    def test_admin_option_detection(self):
+        self.assertTrue(pc.options_require_admin(['hags_on']))
+        self.assertTrue(pc.options_require_admin(['amd_gpu']))
+        self.assertFalse(pc.options_require_admin(['game','captures']))
+
+    def test_apply_batch_without_admin_for_user_only_options(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(pc,'is_admin',return_value=False), \
+                 patch.object(pc,'_apply_batch_local',return_value='ok') as local, \
+                 patch.object(pc,'_apply_batch_elevated',return_value='elevated') as elevated:
+                self.assertEqual(pc.apply_batch(root,['game'],[]),'ok')
+                local.assert_called_once()
+                elevated.assert_not_called()
+
+    def test_apply_batch_requests_elevation_for_admin_options(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(pc,'is_admin',return_value=False), \
+                 patch.object(pc,'_apply_batch_local',return_value='local') as local, \
+                 patch.object(pc,'_apply_batch_elevated',return_value='elevated') as elevated:
+                self.assertEqual(pc.apply_batch(root,['hags_on'],[]),'elevated')
+                elevated.assert_called_once()
+                local.assert_not_called()
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
