@@ -239,7 +239,7 @@ class WindowsSettings:
             return _strict_json(f"$p=Get-NetAdapterPowerManagement -Name '{name}' -ErrorAction Stop; [ordered]@{{AllowComputerToTurnOffDevice=[string]$p.AllowComputerToTurnOffDevice}}")
         if kind == 'net_eee':
             name=spec['name'].replace("'","''")
-            return _strict_json(f"@($x=Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyContinue|Where-Object {{$_.DisplayName -match 'Energy.Efficient|Green Ethernet|Gigabit Lite|Power Saving|Économie.*énergie'}}; $x|Select-Object RegistryKeyword,DisplayValue)")
+            return _strict_json(f"@($x=Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyContinue|Where-Object {{$_.DisplayName -match 'Energy.Efficient|Green Ethernet|Gigabit Lite|Power Saving|Économie.*énergie'}}; $x|Select-Object RegistryKeyword,DisplayValue,ValidDisplayValues)")
         raise ValueError('Type de réglage invalide.')
 
     def _registry_target(self, spec):
@@ -253,6 +253,12 @@ class WindowsSettings:
             return self.reg.HKEY_CURRENT_USER,RUN_KEY,spec['name']
         if spec.get('id') == 'fortnite_gpu' and isinstance(spec.get('name'),str) and spec['name'] and '\x00' not in spec['name']:
             return self.reg.HKEY_CURRENT_USER,r'Software\Microsoft\DirectX\UserGpuPreferences',spec['name']
+        if spec.get('id') in ('nagle_tcp','nagle_ack'):
+            path=str(spec.get('path') or '')
+            prefix=r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\'
+            if not path.startswith(prefix):raise ValueError('Interface TCP non autorisée.')
+            name='TCPNoDelay' if spec['id']=='nagle_tcp' else 'TcpAckFrequency'
+            return self.reg.HKEY_LOCAL_MACHINE,path,name
         raise ValueError('Réglage de registre non autorisé.')
 
     def write(self, spec, value):
