@@ -1823,6 +1823,51 @@ class Coach:
 
 
 
+def run_packaged_system_smoke_test(output_file):
+    """Lecture seule : valide les principaux chemins Windows depuis le vrai EXE empaqueté."""
+    target=Path(output_file).resolve()
+    target.parent.mkdir(parents=True,exist_ok=True)
+    report={'ok':False,'version':VERSION,'frozen':FROZEN,'checks':{},'errors':[]}
+    try:
+        if pc_optimizer is None:
+            raise RuntimeError('pc_optimizer indisponible')
+        scan=pc_optimizer.full_scan()
+        audit=pc_optimizer.gaming_research_audit(scan)
+        fortnite=pc_optimizer.fortnite_profile_status()
+        presentmon=pc_optimizer.presentmon_status()
+        report['checks']={
+            'full_scan_dict':isinstance(scan,dict),
+            'system_detected':bool((scan.get('system') or {}).get('windows') or (scan.get('system') or {}).get('cpu')),
+            'score_present':isinstance(scan.get('score'),(int,float)),
+            'health_score_present':isinstance(scan.get('health_score'),(int,float)),
+            'gaming_score_present':isinstance(scan.get('gaming_score'),(int,float)),
+            'network_snapshot':isinstance(scan.get('network'),dict),
+            'gaming_audit_cards':isinstance(audit.get('cards'),list) and len(audit.get('cards'))>=5,
+            'fortnite_status':isinstance(fortnite,dict) and fortnite.get('game')=='Fortnite',
+            'presentmon_status':isinstance(presentmon,dict) and 'installed' in presentmon,
+            'admin':bool(ctypes.windll.shell32.IsUserAnAdmin()) if os.name=='nt' else False,
+        }
+        report['summary']={
+            'score':scan.get('score'),
+            'health_score':scan.get('health_score'),
+            'gaming_score':scan.get('gaming_score'),
+            'cpu':(scan.get('system') or {}).get('cpu'),
+            'gpu':(scan.get('system') or {}).get('gpu'),
+            'network':scan.get('network'),
+            'fortnite_installed':fortnite.get('installed'),
+            'presentmon_installed':presentmon.get('installed'),
+        }
+        required=[v for k,v in report['checks'].items() if k!='admin']
+        if not all(required):
+            raise RuntimeError('Un contrôle système lecture seule a échoué.')
+        report['ok']=True
+    except Exception as exc:
+        import traceback
+        report['errors'].append(str(exc))
+        report['traceback']=traceback.format_exc()
+    target.write_text(json.dumps(report,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
+    return 0 if report['ok'] else 1
+
 def run_packaged_gui_smoke_test(output_dir):
     """Ouvre le vrai GUI empaqueté, visite les écrans clés et capture le bureau du runner Windows."""
     out=Path(output_dir).resolve()
@@ -1899,6 +1944,10 @@ if __name__=='__main__':
         idx=sys.argv.index('--gui-smoke-test-dir')
         if idx+1>=len(sys.argv):raise SystemExit(2)
         raise SystemExit(run_packaged_gui_smoke_test(sys.argv[idx+1]))
+    if '--system-smoke-test-file' in sys.argv:
+        idx=sys.argv.index('--system-smoke-test-file')
+        if idx+1>=len(sys.argv):raise SystemExit(2)
+        raise SystemExit(run_packaged_system_smoke_test(sys.argv[idx+1]))
     if '--self-test-file' in sys.argv:
         idx=sys.argv.index('--self-test-file')
         if idx+1>=len(sys.argv):raise SystemExit(2)
