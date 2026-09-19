@@ -1,3 +1,16 @@
+## Acolyte 2.5 — mesure, monitoring et restauration intelligente
+
+- **Analyse complète** : matériel, Windows, réseau, stockage, démarrage, jeux, versions installées, températures disponibles et dernier benchmark.
+- **Monitoring matériel** : CPU/RAM à haute fréquence, GPU/VRAM et capteurs thermiques en arrière-plan quand Windows ou un provider matériel fiable les expose. Une température absente reste affichée comme indisponible.
+- **Overlay jeu opt-in** : FPS, 1 % low et frametime en direct via PresentMon lorsque Fortnite tourne, plus CPU/RAM et températures disponibles. La capture s'arrête avec l'overlay et avant un benchmark classique.
+- **Benchmark AVANT / APRÈS** : verdict basé sur FPS moyen, 1 % low, 0,1 % low et stutters. Le rollback automatique est optionnel et différé jusqu'à la fermeture de Fortnite.
+- **Historique détaillé** : journal des réglages suivis avec ancienne/nouvelle valeur et restauration individuelle protégée contre l'écrasement d'une modification externe.
+- **Profils automatiques par jeu** : le profil générique applique la préférence GPU au lancement puis la restaure à la fermeture ; Fortnite conserve son profil compétitif réversible séparé.
+- **Score explicable** : bouton « Pourquoi ce score ? » avec détail des points et des recommandations qui ont réellement retiré des points.
+- **Versions & mises à jour** : lecture locale des pilotes GPU et du BIOS, recherche des mises à jour proposées par Windows Update et accès aux sources officielles fabricant. Acolyte ne prétend pas connaître une version « latest » sans source vérifiée.
+- **Coach IA + diagnostic PC** : les mesures Acolyte du PC et le dernier benchmark sont injectés dans le contexte local du coach pour répondre aux questions de performances sans inventer de métriques.
+- Les protections existantes restent en place : pas d'OC/UV automatique, pas de modification BIOS automatique, pas de désactivation automatique de Defender/pare-feu, pas de faux tweaks HPET/timers.
+
 ## Acolyte 2.3 — Gaming Lab & pack compétitif
 - Nouveau **Lab Gaming** : sépare les optimisations automatiques, les réglages à mesurer et les tweaks volontairement exclus.
 - Nouveau **Pack compétitif sûr** : Game Mode, captures off, plan Ryzen équilibré, souris sans accélération, alimentation réseau, RSS/TCP sain et P2P Windows Update désactivé.
