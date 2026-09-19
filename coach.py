@@ -310,11 +310,16 @@ class PCPremiumUI:
     def _build_summary(self):
         side=ctk.CTkFrame(self.root,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#203354')
         side.grid(row=1,column=2,sticky='nsew',padx=(0,18),pady=(0,16))
-        ctk.CTkLabel(side,text='SANTÉ DU PC',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=16,pady=(16,5))
+        ctk.CTkLabel(side,text='SCORE ACOLYTE',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',padx=16,pady=(16,5))
         self.ring=ScoreRing(side,150,COLORS['panel']);self.ring.pack(pady=(0,2))
         self.score_state=ctk.CTkLabel(side,text='Scan en cours…',text_color=COLORS['cyan'],font=ctk.CTkFont(size=13,weight='bold'))
         self.score_state.pack()
-        ctk.CTkLabel(side,text='État/configuration • pas la puissance matérielle',text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250).pack(pady=(2,0))
+        scores=ctk.CTkFrame(side,fg_color='transparent');scores.pack(fill='x',padx=18,pady=(7,2))
+        self.health_score_label=ctk.CTkLabel(scores,text='Santé —/100',text_color=COLORS['cyan'],font=ctk.CTkFont(size=10,weight='bold'))
+        self.health_score_label.pack(side='left',expand=True)
+        self.gaming_score_label=ctk.CTkLabel(scores,text='Gaming —/100',text_color=COLORS['purple2'],font=ctk.CTkFont(size=10,weight='bold'))
+        self.gaming_score_label.pack(side='right',expand=True)
+        ctk.CTkLabel(side,text='45 % santé Windows • 55 % performance gaming mesurable',text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250).pack(pady=(2,0))
         self.scan_progress=ctk.CTkProgressBar(side,height=8,corner_radius=999,progress_color=COLORS['cyan2'],fg_color='#263758')
         self.scan_progress.pack(fill='x',padx=22,pady=(10,2));self.scan_progress.set(0)
         ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=14)
@@ -573,8 +578,25 @@ class PCPremiumUI:
         self._button_row([('LISTER LES ENTRÉES',self.load_startup,COLORS['cyan2']),('Paramètres Démarrage',lambda:self._open('startup'),COLORS['panel2'])])
 
     def _page_games(self):
-        self._hero('Benchmark en jeu','Mesure Fortnite avec PresentMon via ETW Windows : aucune injection, aucune lecture mémoire et aucun fichier du jeu modifié.',COLORS['purple'])
+        self._hero('Optimisation par jeu','Profils réversibles dédiés à chaque jeu. Fortnite est le premier profil : réglages Windows + configuration compétitive + benchmark avant/après.',COLORS['purple'])
         engine=pc_optimizer.presentmon_status();game=pc_optimizer.game_process_running()
+        profile=pc_optimizer.fortnite_profile_status()
+
+        pcard=ctk.CTkFrame(self.content,fg_color='#0B111D',corner_radius=16,border_width=1,border_color=COLORS['purple'])
+        pcard.pack(fill='x',padx=10,pady=5)
+        pleft=ctk.CTkFrame(pcard,fg_color='transparent');pleft.pack(side='left',fill='both',expand=True,padx=16,pady=14)
+        ctk.CTkLabel(pleft,text='FORTNITE • PROFIL COMPÉTITIF MAX FPS',text_color=COLORS['text'],font=ctk.CTkFont(size=16,weight='bold')).pack(anchor='w')
+        installed='Détecté' if profile.get('installed') else 'Non détecté'
+        applied='OPTIMISÉ' if profile.get('profile_applied') and profile.get('score',0)>=80 else 'À OPTIMISER'
+        ctk.CTkLabel(pleft,text=f"{installed} • Score Fortnite {profile.get('score',0)}/100 • {applied}",
+            text_color=COLORS['success'] if applied=='OPTIMISÉ' else COLORS['warning'],font=ctk.CTkFont(size=10,weight='bold')).pack(anchor='w',pady=(4,3))
+        ctk.CTkLabel(pleft,text='Le profil active Game Mode, coupe Game DVR, force le GPU haute performance et applique un preset Fortnite compétitif réversible. Il ne change pas ton renderer DX11/DX12/Performance Mode, ta résolution ni tes touches.',
+            text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=760,justify='left').pack(anchor='w')
+        ctk.CTkLabel(pleft,text=f"Windows : {profile.get('registry_ok',0)}/{profile.get('registry_total',0)} • Config : {profile.get('config_ok',0)}/{profile.get('config_total',0)} • Benchmark : {'mesuré' if profile.get('benchmark_measured') else 'à faire'}",
+            text_color=COLORS['cyan'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',pady=(7,0))
+        pright=ctk.CTkFrame(pcard,fg_color='transparent');pright.pack(side='right',padx=14,pady=14)
+        ctk.CTkButton(pright,text='⚡ OPTIMISER FORTNITE',command=self.optimize_fortnite,width=180,height=38,corner_radius=10,fg_color=COLORS['purple']).pack(pady=(0,6))
+        ctk.CTkButton(pright,text='↶ RESTAURER FORTNITE',command=self.restore_fortnite,width=180,height=32,corner_radius=9,fg_color=COLORS['panel2']).pack()
         card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
         card.pack(fill='x',padx=10,pady=5)
         left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=14,pady=12)
@@ -613,6 +635,49 @@ class PCPremiumUI:
             self._action_card('Aucun benchmark enregistré','Installe PresentMon si nécessaire, lance Fortnite, choisis 60 secondes puis démarre le benchmark.','Prêt','Mesuré','Nul')
 
         self._button_row([('DÉTECTER LES JEUX INSTALLÉS',self.load_games,COLORS['panel2'])])
+
+    def optimize_fortnite(self):
+        if self.busy:return
+        status=pc_optimizer.fortnite_profile_status()
+        if status.get('running'):
+            return messagebox.showinfo('Fortnite','Ferme Fortnite avant d’appliquer le profil.')
+        if not status.get('installed'):
+            return messagebox.showinfo('Fortnite','Fortnite n’est pas détecté sur ce PC.')
+        msg=(
+            'Appliquer le profil Fortnite compétitif ?\n\n'
+            '• Mode Jeu Windows activé\n'
+            '• Captures Game DVR désactivées\n'
+            '• GPU haute performance forcé pour Fortnite\n'
+            '• V-Sync, Motion Blur et résolution dynamique désactivés\n'
+            '• Qualité Scalability au minimum pour viser les FPS\n\n'
+            'Une sauvegarde exacte de GameUserSettings.ini est créée avant modification. '
+            'Le renderer, la résolution et les touches ne sont pas modifiés.'
+        )
+        if not messagebox.askyesno('Optimiser Fortnite',msg):return
+        self._run('Optimisation Fortnite',lambda:pc_optimizer.apply_fortnite_profile(self.app_dir),self._fortnite_profile_done)
+
+    def _fortnite_profile_done(self,result):
+        changes='\n'.join('• '+x for x in result.get('changes',[]))
+        self._show_result('Fortnite optimisé',result.get('message','Profil appliqué.')+'\n\n'+changes)
+        self.parent.after(250,self.scan_full)
+        self.parent.after(500,lambda:self.show('games'))
+
+    def restore_fortnite(self):
+        if self.busy:return
+        if pc_optimizer.game_process_running().get('running'):
+            return messagebox.showinfo('Fortnite','Ferme Fortnite avant la restauration.')
+        if not messagebox.askyesno('Restaurer Fortnite','Restaurer la configuration Fortnite sauvegardée avant Acolyte et les réglages Windows encore contrôlés par le profil ?'):return
+        self._run('Restauration Fortnite',lambda:pc_optimizer.restore_fortnite_profile(self.app_dir),self._fortnite_restore_done)
+
+    def _fortnite_restore_done(self,result):
+        text=result.get('message','Restauration terminée.')
+        if result.get('preserved_current'):
+            text+='\n\nUne copie de ta configuration modifiée après optimisation a été conservée :\n'+result['preserved_current']
+        if result.get('skipped_registry'):
+            text+='\n\nRéglages Windows non écrasés car ils ont changé depuis : '+', '.join(result['skipped_registry'])
+        self._show_result('Restauration Fortnite',text)
+        self.parent.after(250,self.scan_full)
+        self.parent.after(500,lambda:self.show('games'))
 
     def install_presentmon(self):
         if self.busy:return
@@ -809,9 +874,12 @@ class PCPremiumUI:
         self.kpis['gpu'][1].configure(text=str(system.get('gpu','—'))[:38])
         self.kpis['ram'][1].configure(text='Utilisation live en cours')
         self.kpis['net'][1].configure(text=str(network.get('name') or system.get('nic') or 'Interface active'))
-        score=int(data.get('score',0));self.ring.set_score(score)
+        score=int(data.get('score',0));health_score=int(data.get('health_score',0));gaming_score=int(data.get('gaming_score',0))
+        self.ring.set_score(score)
         state='EXCELLENT' if score>=90 else 'BON ÉTAT' if score>=80 else 'À OPTIMISER' if score>=65 else 'ATTENTION'
         self.score_state.configure(text=state,text_color=COLORS['success'] if score>=90 else COLORS['cyan'] if score>=80 else COLORS['warning'])
+        self.health_score_label.configure(text=f'Santé {health_score}/100')
+        self.gaming_score_label.configure(text=f'Gaming {gaming_score}/100')
         self._render_recos(data.get('recommendations',[]))
         self._sync_feature_switches(data)
         if not self._drift_checked:
@@ -828,7 +896,7 @@ class PCPremiumUI:
         games=data.get('games') or [];startup=data.get('startup_count')
         breakdown=data.get('score_breakdown') or {}
         mini=' • '.join(f"{k.split()[0]} {v}" for k,v in list(breakdown.items())[:3])
-        self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nScore : {score}/100\n{mini}\nRéseau : {network.get('link','?')}")
+        self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nScore global : {score}/100\nSanté : {health_score}/100 • Gaming : {gaming_score}/100\n{mini}\nRéseau : {network.get('link','?')}")
         self._set_text(self.summary_text,self._scan_summary(data))
         self._set_text(self.details_text,json.dumps(data,ensure_ascii=False,indent=2))
         if self.current=='dashboard':self.show('dashboard')
@@ -850,14 +918,25 @@ class PCPremiumUI:
         self.parent.after(250,self.scan_full)
 
     def _scan_summary(self,data):
-        lines=[f"Score Santé du PC : {data.get('score',0)}/100",
-               data.get('score_note','Le score mesure l’état/configuration, pas la puissance du matériel.'),'']
+        lines=[
+            f"Score Acolyte global : {data.get('score',0)}/100",
+            f"Santé Windows : {data.get('health_score',0)}/100",
+            f"Performance gaming : {data.get('gaming_score',0)}/100",
+            data.get('score_note',''),''
+        ]
         maximums={'Sécurité Windows':25,'Performances gaming':30,'Stockage / entretien':20,'Démarrage':10,'Réseau':10,'État Windows':5}
         breakdown=data.get('score_breakdown') or {}
         if breakdown:
-            lines.append('DÉTAIL DU SCORE')
+            lines.append('DÉTAIL SYSTÈME')
             for key,maxv in maximums.items():
                 if key in breakdown:lines.append(f"• {key} : {breakdown[key]}/{maxv}")
+            lines.append('')
+        gaming=data.get('gaming_breakdown') or {}
+        if gaming:
+            lines.append('DÉTAIL GAMING')
+            gmax={'Windows gaming':30,'Profil Fortnite':35,'RAM / BIOS':15,'Benchmark réel':20}
+            for key,maxv in gmax.items():
+                if key in gaming:lines.append(f"• {key} : {gaming[key]}/{maxv}")
             lines.append('')
         for x in data.get('positives',[]):lines.append('✓ '+x)
         for x in data.get('recommendations',[]):lines.append('! '+x.get('title','')+' — '+x.get('detail',''))
@@ -1002,9 +1081,14 @@ class PCPremiumUI:
     def load_games(self):
         self._run('Détection des jeux',pc_optimizer.detected_games,self._render_games)
     def _render_games(self,rows):
-        self._clear();self._hero('Jeux détectés',f'{len(rows)} jeu(x) détecté(s) localement.',COLORS['purple'])
+        self._clear();self._hero('Jeux détectés',f'{len(rows)} jeu(x) détecté(s) localement. Les profils seront ajoutés jeu par jeu.',COLORS['purple'])
         if not rows:self._action_card('Aucun jeu détecté','Ajoute les autres launchers plus tard ou vérifie l’installation Epic.','Information','Nul','Nul')
-        for row in rows:self._action_card(row.get('name','Jeu'),row.get('launcher','')+' • '+row.get('path',''),'Détecté','Profil futur','Nul')
+        for row in rows:
+            name=row.get('name','Jeu')
+            if str(name).casefold()=='fortnite':
+                self._action_card(name,row.get('launcher','')+' • '+row.get('path',''),'Profil disponible','Élevé','Faible',command=lambda:self.show('games'),button='OPTIMISER')
+            else:
+                self._action_card(name,row.get('launcher','')+' • '+row.get('path',''),'Détecté','Profil à venir','Nul')
         self._set_text(self.details_text,json.dumps(rows,ensure_ascii=False,indent=2))
 
     def load_apps(self):
