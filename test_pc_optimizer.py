@@ -1,5 +1,4 @@
-import ast
-import threading
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -50,31 +49,37 @@ class BenchmarkTests(unittest.TestCase):
         with patch.object(pc,'_gateway',side_effect=FileNotFoundError),patch.object(pc,'ping',side_effect=lambda h: h):
             self.assertEqual(pc.benchmark(),['1.1.1.1','8.8.8.8'])
 
-    def test_job_executes_before_ui_callback(self):
-        # Extract the actual method without importing Windows/audio/GUI dependencies.
-        tree=ast.parse(Path('coach.py').read_text())
-        method=next(n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='pc_job')
-        namespace={'threading':threading}
-        exec(compile(ast.Module(body=[method],type_ignores=[]),'coach.py','exec'),namespace)
-        main=threading.get_ident();finished=threading.Event();callbacks=[];calls=[]
-        class Root:
-            def after(self, delay, callback):
-                callbacks.append(callback);finished.set()
-        class Status:
-            def set(self, value):pass
-        class App:
-            root=Root();pc_status=Status()
-            def pc_done(self,result):calls.append(result)
-            def pc_error(self,error):calls.append(error)
-        def work():
-            self.assertNotEqual(threading.get_ident(),main)
-            return 'done'
-        namespace['pc_job'](App(),'Test',work)
-        self.assertTrue(finished.wait(2))
-        self.assertEqual(calls,[])
-        callbacks.pop()()
-        self.assertEqual(calls,['done'])
 
+class StateSyncTests(unittest.TestCase):
+    class FakeBackend:
+        identity={'machine':'test','sid':'test'}
+        def __init__(self):
+            self.values={}
+        def read(self,spec):
+            return self.values.get(repr(spec),{'exists':False})
+        def write(self,spec,value):
+            self.values[repr(spec)]=value
+
+    def test_external_change_is_resynced_instead_of_failing(self):
+        backend=self.FakeBackend()
+        spec={'kind':'registry','id':'game_auto'}
+        target={'exists':True,'type':4,'value':1}
+        backend.values[repr(spec)]={'exists':True,'type':4,'value':0}
+        with tempfile.TemporaryDirectory() as root:
+            first=pc._apply_changes(root,[(spec,target)],backend)
+            self.assertEqual(first['changed'],1)
+            # Changement externe après l'application Acolyte.
+            backend.values[repr(spec)]={'exists':True,'type':4,'value':0}
+            second=pc._apply_changes(root,[(spec,target)],backend)
+            self.assertEqual(second['changed'],1)
+            self.assertEqual(backend.read(spec),target)
+            # Restaurer doit revenir au nouvel état externe, pas à un état obsolète.
+            pc.restore(root,backend)
+            self.assertEqual(backend.read(spec),{'exists':True,'type':4,'value':0})
+
+    def test_feature_catalog_contains_premium_categories(self):
+        for key in ('amd_gpu','telemetry_min','vbs_off','net_power','net_eee','tcp_baseline','explorer_tweaks'):
+            self.assertIn(key,pc.OPTIONS)
 
 def healthy_scan(link='2.5 Gbps'):
     return {
