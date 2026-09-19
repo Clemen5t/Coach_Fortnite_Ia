@@ -399,12 +399,7 @@ class PCPremiumUI:
         for key in to_disable:lines.append('↶ Désactiver/restaurer : '+pc_optimizer.OPTIONS[key][0])
         if not messagebox.askyesno('Appliquer les changements','\n'.join(lines)+'\n\nAcolyte appliquera tout en une fois puis fera une seule analyse de vérification. Continuer ?'):return
         def work():
-            results=[]
-            if to_enable:
-                results.append(pc_optimizer.apply_selected(to_enable,self.app_dir))
-            for key in to_disable:
-                results.append(pc_optimizer.restore_feature(self.app_dir,key))
-            return '\n'.join(str(x) for x in results if x)
+            return pc_optimizer.apply_batch(self.app_dir,to_enable,to_disable)
         self._run('Application des changements',work,lambda result:self._pending_applied(result,keys))
 
     def _pending_applied(self,result,keys):
@@ -890,7 +885,7 @@ class PCPremiumUI:
         if not opts:return messagebox.showinfo('Optimisation intelligente','Les réglages sûrs suivis par Acolyte sont déjà dans l’état recommandé.')
         details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
         if not messagebox.askyesno('Optimisation intelligente','Acolyte recommande :\n\n'+details+'\n\nAucun tweak réseau agressif, BIOS, overclock ou sécurité ne sera appliqué. Continuer ?'):return
-        self._run('Optimisation intelligente',lambda:pc_optimizer.apply_selected(opts,self.app_dir),lambda x:self._after_mutation('Optimisation intelligente',x))
+        self._run('Optimisation intelligente',lambda:pc_optimizer.apply_batch(self.app_dir,opts,[]),lambda x:self._after_mutation('Optimisation intelligente',x))
 
     def _after_mutation(self,title,result):
         self._show_result(title,result)
