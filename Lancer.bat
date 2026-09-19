@@ -49,6 +49,7 @@ if errorlevel 1 (
 )
 
 :dependencies
+call :repair_local_files
 ".venv\Scripts\python.exe" updater.py --recover
 if errorlevel 1 (
   echo Restauration impossible. Ne supprime pas le dossier .updates.
