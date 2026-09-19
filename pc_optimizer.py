@@ -1423,7 +1423,6 @@ def fortnite_profile_status():
         except Exception as exc:
             registry['error']=str(exc)
     cfg_match,cfg_total,cfg_details=_fortnite_config_match(cfg)
-    state=read_json= None
     try:
         state=json.loads(FORTNITE_PROFILE_FILE.read_text(encoding='utf-8')) if FORTNITE_PROFILE_FILE.exists() else {}
     except Exception:state={}
