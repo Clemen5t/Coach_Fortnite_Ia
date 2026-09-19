@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -201,6 +202,177 @@ def apply(root,update,replace=os.replace):
     # L'ancien .update-state.json éventuel est volontairement ignoré.
     # Il peut appartenir à une ancienne ACL/admin ; ne jamais le toucher.
     return backup
+
+
+# === Acolyte.exe releases ===
+EXE_LIMIT = 450 * 1024 * 1024
+EXE_NAME = 'Acolyte.exe'
+EXE_HASH_NAME = 'Acolyte.exe.sha256'
+
+def version_tuple(value):
+    text=str(value or '').strip().lstrip('vV')
+    if not re.fullmatch(r'\d+\.\d+\.\d+',text):
+        raise ValueError('Version invalide : '+str(value))
+    return tuple(int(x) for x in text.split('.'))
+
+class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        parsed=urllib.parse.urlparse(newurl)
+        host=(parsed.hostname or '').lower()
+        allowed=(
+            host=='github.com' or
+            host=='release-assets.githubusercontent.com' or
+            host.endswith('.githubusercontent.com')
+        )
+        if parsed.scheme!='https' or not allowed:
+            raise ValueError('Redirection de release refusée.')
+        return super().redirect_request(req,fp,code,msg,headers,newurl)
+
+def _release_json(url):
+    req=urllib.request.Request(url,headers={
+        'User-Agent':'Acolyte-Updater',
+        'Accept':'application/vnd.github+json'
+    })
+    try:
+        with urllib.request.urlopen(req,timeout=25) as response:
+            data=response.read(2*1024*1024+1)
+    except urllib.error.HTTPError as exc:
+        if exc.code==404:return None
+        if exc.code in (403,429):raise RuntimeError('Limite GitHub atteinte. Réessaie plus tard.') from None
+        raise
+    if len(data)>2*1024*1024:raise ValueError('Réponse release trop volumineuse.')
+    return json.loads(data.decode('utf-8'))
+
+def plan_exe(repo,current_version,allow_equal=False,release_json=_release_json):
+    repo=normalize_repo(repo)
+    meta=release_json('https://api.github.com/repos/'+repo+'/releases/latest')
+    if not meta:return None
+    if meta.get('draft') or meta.get('prerelease'):return None
+    version=str(meta.get('tag_name') or '').lstrip('vV').strip()
+    remote=version_tuple(version);current=version_tuple(current_version)
+    if remote<current or (remote==current and not allow_equal):return None
+    assets={str(a.get('name')):a for a in (meta.get('assets') or []) if isinstance(a,dict)}
+    exe=assets.get(EXE_NAME);digest=assets.get(EXE_HASH_NAME)
+    if not exe or not digest:
+        raise RuntimeError('La release '+version+' ne contient pas Acolyte.exe et sa somme SHA-256.')
+    exe_url=str(exe.get('browser_download_url') or '')
+    hash_url=str(digest.get('browser_download_url') or '')
+    if not exe_url.startswith('https://github.com/') or not hash_url.startswith('https://github.com/'):
+        raise RuntimeError('URL de release GitHub invalide.')
+    size=int(exe.get('size') or 0)
+    if size and not 1_000_000<=size<=EXE_LIMIT:
+        raise RuntimeError('Taille de Acolyte.exe anormale.')
+    return {'repo':repo,'version':version,'exe_url':exe_url,'hash_url':hash_url,'size':size}
+
+def _download_release(url,limit):
+    req=urllib.request.Request(url,headers={'User-Agent':'Acolyte-Updater'})
+    opener=urllib.request.build_opener(ReleaseRedirect())
+    with opener.open(req,timeout=90) as response:
+        total=0;parts=[]
+        while True:
+            chunk=response.read(1024*512)
+            if not chunk:break
+            total+=len(chunk)
+            if total>limit:raise RuntimeError('Téléchargement de release trop volumineux.')
+            parts.append(chunk)
+    return b''.join(parts)
+
+def stage_exe_release(update,root):
+    version=update['version']
+    folder=updater_data_dir(root)/'Exe'/version
+    folder.mkdir(parents=True,exist_ok=True)
+    staged=folder/(EXE_NAME+'.new')
+    expected_text=_download_release(update['hash_url'],64*1024).decode('utf-8','replace')
+    match=re.search(r'\b([A-Fa-f0-9]{64})\b',expected_text)
+    if not match:raise RuntimeError('Somme SHA-256 de la release invalide.')
+    expected=match.group(1).lower()
+    data=_download_release(update['exe_url'],EXE_LIMIT)
+    if len(data)<1_000_000 or data[:2]!=b'MZ':
+        raise RuntimeError('Acolyte.exe téléchargé n’est pas un exécutable Windows valide.')
+    actual=hashlib.sha256(data).hexdigest()
+    if actual!=expected:
+        raise RuntimeError('La vérification SHA-256 de Acolyte.exe a échoué.')
+    tmp=staged.with_suffix('.tmp')
+    tmp.write_bytes(data);os.replace(tmp,staged)
+    return staged
+
+def exe_install_dir():
+    base=Path(os.environ.get('LOCALAPPDATA') or (Path.home()/'AppData'/'Local'))
+    folder=base/'AcolyteFortnite'/'App'
+    folder.mkdir(parents=True,exist_ok=True)
+    return folder
+
+def _create_exe_shortcut(target):
+    if os.name!='nt':return
+    target=Path(target).resolve()
+    script=(
+        "$ErrorActionPreference='Stop';"
+        "$desk=[Environment]::GetFolderPath('Desktop');"
+        "$ws=New-Object -ComObject WScript.Shell;"
+        "$lnk=Join-Path $desk 'Acolyte Fortnite.lnk';"
+        "$s=$ws.CreateShortcut($lnk);"
+        "$s.TargetPath='"+str(target).replace("'","''")+"';"
+        "$s.WorkingDirectory='"+str(target.parent).replace("'","''")+"';"
+        "$s.IconLocation='"+str(target).replace("'","''")+",0';"
+        "$s.Description='Acolyte Fortnite';"
+        "$s.Save()"
+    )
+    subprocess.run(
+        ['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-Command',script],
+        capture_output=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),timeout=30
+    )
+
+def _schedule_self_replace(staged,current_exe):
+    staged=Path(staged).resolve();current=Path(current_exe).resolve()
+    helper=updater_data_dir(current.parent)/('replace-'+uuid.uuid4().hex+'.ps1')
+    pid=os.getpid()
+    ps1=f"""$ErrorActionPreference='Stop'
+$pidToWait={pid}
+$src={json.dumps(str(staged))}
+$dst={json.dumps(str(current))}
+try {{ Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue }} catch {{}}
+Start-Sleep -Milliseconds 600
+$ok=$false
+for($i=0;$i -lt 30;$i++){{
+  try {{
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    $ok=$true
+    break
+  }} catch {{
+    Start-Sleep -Milliseconds 500
+  }}
+}}
+if(-not $ok){{ exit 12 }}
+Start-Process -FilePath $dst -WorkingDirectory (Split-Path -Parent $dst)
+Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+"""
+    helper.write_text(ps1,encoding='utf-8')
+    subprocess.Popen(
+        ['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],
+        cwd=str(current.parent),
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)
+    )
+
+def install_exe_release(update,root,current_exe=None):
+    """Installe Acolyte.exe dans LocalAppData ou remplace l'EXE en cours après sa fermeture."""
+    root=Path(root).resolve()
+    staged=stage_exe_release(update,root)
+    target=exe_install_dir()/EXE_NAME
+    current=Path(current_exe).resolve() if current_exe else None
+
+    if current is not None and current==target.resolve():
+        _schedule_self_replace(staged,current)
+        return {'version':update['version'],'target':str(target),'mode':'self_update'}
+
+    tmp=target.with_suffix('.exe.tmp')
+    shutil.copyfile(staged,tmp);os.replace(tmp,target)
+    _create_exe_shortcut(target)
+    try:staged.unlink()
+    except OSError:pass
+    if os.name=='nt':
+        os.startfile(str(target))
+    return {'version':update['version'],'target':str(target),'mode':'transition'}
 
 if __name__=='__main__':
     import sys
