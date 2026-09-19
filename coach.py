@@ -1025,8 +1025,21 @@ class PCPremiumUI:
             'Redémarrer maintenant vers le BIOS / UEFI ?'
         )
         if not messagebox.askyesno('Assistant RAM / EXPO',msg):return
-        try:pc_optimizer.reboot_to_firmware()
-        except Exception as exc:self._error('Redémarrage UEFI',exc)
+        try:
+            pc_optimizer.reboot_to_firmware()
+            return
+        except Exception as exc:
+            detail=str(exc).strip() or repr(exc)
+            fallback_msg=(
+                'Windows n’a pas réussi à programmer le redémarrage direct vers l’UEFI.\n\n'
+                f'Détail : {detail}\n\n'
+                'Acolyte peut utiliser le démarrage avancé de Windows à la place. '
+                'Après le redémarrage, choisis Dépannage → Options avancées → Paramètres du microprogramme UEFI.\n\n'
+                'Redémarrer maintenant vers le démarrage avancé ?'
+            )
+            if not messagebox.askyesno('UEFI direct indisponible',fallback_msg):return
+        try:pc_optimizer.reboot_to_advanced_startup()
+        except Exception as exc:self._error('Démarrage avancé',exc)
 
     def _page_apps(self):
         self._hero('Logiciels','Liste fermée d’applications Windows facultatives. La désinstallation est séparée de la restauration des tweaks.',COLORS['gold'])
@@ -2051,6 +2064,45 @@ def run_packaged_gui_smoke_test(output_dir):
         app.pc_ui.show('lab');wait_ui()
         capture('04-gaming-lab')
 
+        # Teste le flux BIOS sans lancer de vrai redémarrage.
+        original_askyesno=messagebox.askyesno
+        original_fw=pc_optimizer.reboot_to_firmware
+        original_advanced=pc_optimizer.reboot_to_advanced_startup
+        bios_test={'initial_cancel':False,'fallback_cancel':False,'fallback_accept':False}
+        try:
+            calls={'fw':0,'advanced':0}
+            messagebox.askyesno=lambda *a,**k:False
+            pc_optimizer.reboot_to_firmware=lambda: calls.__setitem__('fw',calls['fw']+1)
+            pc_optimizer.reboot_to_advanced_startup=lambda: calls.__setitem__('advanced',calls['advanced']+1)
+            app.pc_ui.reboot_to_uefi()
+            bios_test['initial_cancel']=(calls=={'fw':0,'advanced':0})
+
+            calls={'fw':0,'advanced':0}
+            answers=iter([True,False])
+            messagebox.askyesno=lambda *a,**k:next(answers)
+            def fail_fw():
+                calls['fw']+=1
+                raise RuntimeError('Erreur simulée UEFI (code 203)')
+            pc_optimizer.reboot_to_firmware=fail_fw
+            pc_optimizer.reboot_to_advanced_startup=lambda: calls.__setitem__('advanced',calls['advanced']+1)
+            app.pc_ui.reboot_to_uefi()
+            bios_test['fallback_cancel']=(calls=={'fw':1,'advanced':0})
+
+            calls={'fw':0,'advanced':0}
+            answers=iter([True,True])
+            messagebox.askyesno=lambda *a,**k:next(answers)
+            def fail_fw_again():
+                calls['fw']+=1
+                raise RuntimeError('Erreur simulée UEFI (code 203)')
+            pc_optimizer.reboot_to_firmware=fail_fw_again
+            pc_optimizer.reboot_to_advanced_startup=lambda: calls.__setitem__('advanced',calls['advanced']+1)
+            app.pc_ui.reboot_to_uefi()
+            bios_test['fallback_accept']=(calls=={'fw':1,'advanced':1})
+        finally:
+            messagebox.askyesno=original_askyesno
+            pc_optimizer.reboot_to_firmware=original_fw
+            pc_optimizer.reboot_to_advanced_startup=original_advanced
+
         report['checks']={
             'coach_section':True,
             'pc_section':True,
@@ -2060,6 +2112,10 @@ def run_packaged_gui_smoke_test(output_dir):
             'fortnite_profile_api':pc_optimizer is not None and hasattr(pc_optimizer,'fortnite_profile_status'),
             'competitive_pack_api':pc_optimizer is not None and hasattr(pc_optimizer,'apply_competitive_pack'),
             'score_split_api':pc_optimizer is not None and hasattr(pc_optimizer,'gaming_score_scan'),
+            'uefi_fallback_api':pc_optimizer is not None and hasattr(pc_optimizer,'reboot_to_advanced_startup'),
+            'bios_initial_cancel_safe':bios_test['initial_cancel'],
+            'bios_fallback_cancel_safe':bios_test['fallback_cancel'],
+            'bios_fallback_accept_path':bios_test['fallback_accept'],
             'admin':bool(ctypes.windll.shell32.IsUserAnAdmin()) if os.name=='nt' else False,
         }
         if not all(v for k,v in report['checks'].items() if k!='admin'):
