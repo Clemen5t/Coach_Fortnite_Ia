@@ -1,9 +1,39 @@
 """Optimisation Windows 11 locale pour Acolyte. Réglages mesurables, prudents et réversibles."""
-import ctypes, ipaddress, json, os, re, socket, statistics, subprocess, time
+import ctypes, hashlib, ipaddress, json, os, re, socket, statistics, subprocess, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BACKUP_NAME='pc-optimizer-backup.json'
+
+def optimizer_data_dir(root):
+    """État de l'optimiseur dans LocalAppData, indépendant des ACL du dossier téléchargé."""
+    root=Path(root).resolve()
+    base=Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir())/'AcolyteFortnite'/'Optimizer'
+    key=hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:16]
+    folder=base/key
+    folder.mkdir(parents=True,exist_ok=True)
+    return folder
+
+def optimizer_state_path(root):
+    return optimizer_data_dir(root)/JOURNAL_NAME
+
+def optimizer_desired_path(root):
+    return optimizer_data_dir(root)/DESIRED_NAME
+
+def optimizer_lock_path(root):
+    return optimizer_data_dir(root)/'pc-optimizer.lock'
+
+def _migrate_optimizer_file(root,name):
+    target=optimizer_data_dir(root)/name
+    if target.exists():return target
+    old=Path(root)/name
+    if old.exists():
+        try:
+            target.write_bytes(old.read_bytes())
+        except OSError:
+            pass
+    return target
+
 
 def _run(args, timeout=35, encoding=None):
     p=subprocess.run(args,capture_output=True,text=True,encoding=encoding,errors="replace",timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
@@ -362,8 +392,8 @@ class WindowsSettings:
 
 
 def _save_state(path, data):
-    import tempfile
     path = Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix='pc-state-', suffix='.tmp', dir=path.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -375,7 +405,7 @@ def _save_state(path, data):
 
 
 def desired_features(root):
-    path=Path(root)/DESIRED_NAME
+    path=_migrate_optimizer_file(root,DESIRED_NAME)
     try:
         data=json.loads(path.read_text(encoding='utf-8'))
         return {k:bool(v) for k,v in data.items() if k in OPTIONS}
@@ -386,7 +416,7 @@ def set_feature_desired(root, option, enabled):
     data=desired_features(root)
     if enabled:data[option]=True
     else:data.pop(option,None)
-    path=Path(root)/DESIRED_NAME
+    path=optimizer_desired_path(root)
     temp=path.with_suffix('.tmp')
     temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     os.replace(temp,path)
@@ -414,23 +444,67 @@ def reapply_persistent_features(root, options=None):
     return {'applied':applied,'failed':failed}
 
 def _load_state(root, backend):
-    path = Path(root)/JOURNAL_NAME
+    path=_migrate_optimizer_file(root,JOURNAL_NAME)
     if not path.exists():
-        if (Path(root)/BACKUP_NAME).exists():
-            raise RuntimeError('Une sauvegarde de l’ancien optimiseur existe. Elle est incomplète : aucun nouveau réglage ne sera appliqué ni cette sauvegarde écrasée. Conserve pc-optimizer-backup.json pour examiner la restauration des anciens changements.')
-        return {'schema': 2, 'identity': backend.identity, 'entries': []}
-    state = json.loads(path.read_text(encoding='utf-8'))
-    if state.get('schema') != 2 or state.get('identity') != backend.identity or not isinstance(state.get('entries'), list):
-        raise ValueError('Sauvegarde invalide ou créée sur un autre PC/compte Windows.')
+        return {'schema':2,'identity':backend.identity,'entries':[],'quarantined':[]}
+    try:
+        state=json.loads(path.read_text(encoding='utf-8'))
+    except (OSError,ValueError,json.JSONDecodeError) as exc:
+        # Journal illisible/corrompu : on le préserve et repart proprement.
+        try:
+            broken=path.with_name('pc-optimizer-broken-'+str(int(time.time()))+'.json')
+            os.replace(path,broken)
+        except OSError:pass
+        return {'schema':2,'identity':backend.identity,'entries':[],'quarantined':[{'reason':'journal illisible','error':str(exc)}]}
+    if state.get('schema')!=2 or state.get('identity')!=backend.identity or not isinstance(state.get('entries'),list):
+        try:
+            incompatible=path.with_name('pc-optimizer-incompatible-'+str(int(time.time()))+'.json')
+            os.replace(path,incompatible)
+        except OSError:pass
+        return {'schema':2,'identity':backend.identity,'entries':[],'quarantined':[{'reason':'journal incompatible'}]}
+    state.setdefault('quarantined',[])
     return state
 
+def _reconcile_pending_state(root,state,backend):
+    """Répare automatiquement un journal laissé pending par un crash/arrêt forcé."""
+    path=optimizer_state_path(root)
+    changed=False
+    kept=[]
+    for entry in state.get('entries',[]):
+        if not entry.get('pending'):
+            kept.append(entry);continue
+        spec=entry.get('spec')
+        target=entry.get('target')
+        try:
+            current=backend.read(spec)
+            # Si l’écriture avait réellement abouti, on finalise simplement.
+            # Sinon on prend l’état Windows actuel comme nouvelle référence appliquée.
+            entry['applied']=current
+            entry['pending']=False
+            entry.pop('target',None)
+            entry['recovered_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+            entry['recovery']='target_applied' if current==target else 'actual_state_resynced'
+            kept.append(entry)
+        except Exception as exc:
+            # Un ancien spec/pilote peut ne plus exister. On ne bloque pas Acolyte :
+            # l’entrée est conservée à part pour audit mais n’est plus réappliquée.
+            q=dict(entry)
+            q['pending']=False
+            q['quarantined_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+            q['reason']='Impossible de relire ce réglage après interruption'
+            q['error']=str(exc)[:500]
+            state.setdefault('quarantined',[]).append(q)
+        changed=True
+    state['entries']=kept
+    if changed:_save_state(path,state)
+    return changed
 
 @contextlib.contextmanager
 def _exclusive(root):
     # Verrou de processus + verrou de fichier, libérés automatiquement après un crash.
     if not _MUTATION_LOCK.acquire(blocking=False):raise RuntimeError('Une modification est déjà en cours.')
     try:
-        with open(Path(root)/'pc-optimizer.lock', 'a+b') as handle:
+        with open(optimizer_lock_path(root), 'a+b') as handle:
             handle.seek(0, 2)
             if handle.tell() == 0:handle.write(b'0');handle.flush()
             handle.seek(0)
@@ -449,11 +523,10 @@ def _exclusive(root):
 
 
 def _apply_changes(root, changes, backend):
-    path = Path(root)/JOURNAL_NAME
+    path=optimizer_state_path(root)
     with _exclusive(root):
-        state = _load_state(root, backend)
-        if any(e.get('pending') for e in state['entries']):
-            raise RuntimeError('Une opération a été interrompue. Clique sur Restaurer avant de continuer.')
+        state=_load_state(root,backend)
+        _reconcile_pending_state(root,state,backend)
         # Lire tous les réglages avant toute modification.
         before = [(spec, value, backend.read(spec)) for spec, value in changes]
         touched = []
@@ -688,7 +761,7 @@ def restore_feature(root, option, backend=None):
     if option not in OPTIONS:raise ValueError('Fonctionnalité inconnue.')
     backend=backend or WindowsSettings()
     specs=[spec for spec,_ in _feature_changes(option,backend)]
-    path=Path(root)/JOURNAL_NAME
+    path=optimizer_state_path(root)
     with _exclusive(root):
         state=_load_state(root,backend)
         matches=[e for e in state['entries'] if any(e.get('spec')==spec for spec in specs)]
@@ -704,7 +777,7 @@ def restore_feature(root, option, backend=None):
             except Exception as exc:errors.append(str(exc))
         if errors:raise RuntimeError('Restauration partielle de la fonctionnalité : '+'; '.join(errors))
         if not state['entries'] and path.exists():
-            archive=Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
+            archive=optimizer_data_dir(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
             os.replace(path,archive)
         set_feature_desired(root,option,False)
         return f'{restored} réglage(s) restauré(s) pour {OPTIONS[option][0]}.'
@@ -719,12 +792,12 @@ def restore(root, backend=None):
             try:
                 backend.write(entry['spec'], entry['original'])
                 state['entries'].remove(entry)
-                _save_state(Path(root)/JOURNAL_NAME, state)
+                _save_state(optimizer_state_path(root),state)
             except Exception as exc:errors.append(str(exc))
         if errors:raise RuntimeError('Restauration partielle ; sauvegarde conservée pour réessayer : '+'; '.join(errors))
-        archive = Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
-        os.replace(Path(root)/JOURNAL_NAME, archive)
-        desired=Path(root)/DESIRED_NAME
+        archive=optimizer_data_dir(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
+        os.replace(optimizer_state_path(root),archive)
+        desired=optimizer_desired_path(root)
         if desired.exists():
             try:desired.unlink()
             except OSError:pass
