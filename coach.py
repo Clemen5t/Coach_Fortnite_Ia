@@ -220,7 +220,7 @@ class PCPremiumUI:
         ('dashboard','⌂','Tableau de bord'),('performance','⚡','Performances'),('network','↔','Réseau'),
         ('gpu','◈','Carte graphique'),('privacy','◉','Confidentialité'),('comfort','✦','Confort'),('startup','↗','Démarrage'),
         ('games','🎮','Jeux'),('checkup','✓','Check-up'),('bios','◆','BIOS / RAM'),
-        ('apps','▦','Logiciels'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
+        ('apps','▦','Logiciels'),('research','⌕','Méthode'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
         self.option_vars={k:tk.BooleanVar(value=False) for k in pc_optimizer.OPTIONS}
@@ -465,7 +465,7 @@ class PCPremiumUI:
 
     def _page_dashboard(self):
         self._hero('Centre de contrôle','Une vue unique du matériel, de Windows, du réseau et des recommandations prioritaires.',COLORS['cyan'])
-        self._button_row([('✦ SCAN COMPLET',self.scan_full,COLORS['cyan2']),('◫ BENCHMARK RÉSEAU',self.benchmark,'#1675E0'),('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple'])])
+        self._button_row([('✦ SCAN COMPLET',self.scan_full,COLORS['cyan2']),('🚀 AUTO-TUNE PC COMPLET',self.complete_gaming_tune,COLORS['purple']),('🎮 OPTIMISER FORTNITE',lambda:self.show('games'),'#1675E0')])
 
         strip=ctk.CTkFrame(self.content,fg_color='transparent');strip.pack(fill='x',padx=10,pady=(2,8))
         for i in range(3):strip.grid_columnconfigure(i,weight=1,uniform='dash')
@@ -505,11 +505,16 @@ class PCPremiumUI:
             ('background_services','Services de télémétrie','Désactive uniquement DiagTrack/dmwappushservice s’ils existent.','Faible','Moyen'),
         ])
         perf_keys=['game','captures','background_apps','hags_on','fast_startup_off','hibernation_off','sysmain_off','balanced','amd_gpu','vbs_off','background_services']
-        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(perf_keys),COLORS['success']),
+        self._button_row([('🚀 AUTO-TUNE PC COMPLET',self.complete_gaming_tune,COLORS['purple']),
+                          ('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(perf_keys),COLORS['success']),
                           ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(perf_keys),COLORS['panel2']),
-                          ('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple']),
                           ('🖥 FRÉQUENCE ÉCRAN MAX',self.max_refresh_rate,COLORS['cyan2']),
                           ('🗓 OPTIMISER TÂCHES',self.optimize_tasks,COLORS['panel2'])])
+        self._action_card(
+            'AUTO-TUNE MESURÉ',
+            'Applique la base Windows/GPU/réseau réversible, pousse l’écran à sa fréquence maximale détectée puis teste automatiquement RSC + modération des interruptions. Le profil réseau est annulé si la mesure régresse.',
+            'Recommandé','Élevé','Faible',command=self.complete_gaming_tune,button='LANCER'
+        )
 
     def _page_network(self):
         self._hero('Réseau & latence','Acolyte sépare les réglages fiables des tweaks à tester. Le DNS n’est jamais présenté comme une baisse garantie du ping en partie.',COLORS['cyan'])
@@ -517,15 +522,16 @@ class PCPremiumUI:
             ('net_power','Alimentation de la carte réseau','Empêche Windows d’éteindre la carte réseau active pour économiser l’énergie.','Moyen','Faible'),
             ('net_eee','EEE / Green Ethernet','Désactive Energy Efficient Ethernet uniquement si le pilote expose une valeur compatible.','Moyen','Faible'),
             ('tcp_baseline','Réactivité réseau Windows','Active RSS et remet l’auto-tuning TCP en Normal pour une base saine.','Moyen','Faible'),
+            ('net_low_latency','RSC + Interrupt Moderation','Profil faible latence : RSC coupé et modération des interruptions désactivée quand le pilote le permet. À conserver uniquement si la mesure avant/après est meilleure.','Variable','Faible'),
             ('nagle_off','Test sans Nagle','Applique TCPNoDelay et TcpAckFrequency sur l’interface active. À comparer avant/après.','Variable','Moyen'),
             ('p2p_off','Partage P2P des mises à jour','Désactive le P2P de Delivery Optimization afin d’éviter des uploads Windows en arrière-plan.','Faible','Faible'),
         ])
-        net_keys=['net_power','net_eee','tcp_baseline','nagle_off','p2p_off']
-        self._button_row([('✓ APPLIQUER CES CHANGEMENTS',lambda:self._apply_pending_features(net_keys),COLORS['success']),
-                          ('ANNULER LA SÉLECTION',lambda:self._cancel_pending_features(net_keys),COLORS['panel2']),
-                          ('◫ BENCHMARK',self.benchmark,'#1675E0'),
-                          ('⚡ DNS AUTO',self.auto_dns,COLORS['purple']),
-                          ('↻ RAFRAÎCHIR RÉSEAU',self.refresh_network,COLORS['cyan2'])])
+        net_keys=['net_power','net_eee','tcp_baseline','net_low_latency','nagle_off','p2p_off']
+        self._button_row([('🎯 AUTO-TUNE LATENCE',self.autotune_network,COLORS['purple']),
+                          ('🌍 SERVEURS FORTNITE',self.benchmark_fortnite_regions,'#1675E0'),
+                          ('✓ APPLIQUER',lambda:self._apply_pending_features(net_keys),COLORS['success']),
+                          ('⚡ DNS AUTO',self.auto_dns,COLORS['panel2']),
+                          ('↻ RAFRAÎCHIR',self.refresh_network,COLORS['cyan2'])])
 
     def _page_gpu(self):
         self._hero('Carte graphique','Détection du GPU principal, pilote et profil AMD automatique sans overclocking ni clé Adrenalin privée.',COLORS['purple2'])
@@ -835,6 +841,26 @@ class PCPremiumUI:
         self._hero('Logiciels','Liste fermée d’applications Windows facultatives. La désinstallation est séparée de la restauration des tweaks.',COLORS['gold'])
         self._button_row([('LISTER LES APPS PROPOSÉES',self.load_apps,COLORS['cyan2']),('Toutes les applications',lambda:self._open('apps'),COLORS['panel2']),('Microsoft Store',lambda:self._open('store'),COLORS['panel2'])])
 
+    def _page_research(self):
+        self._hero(
+            'Méthode & audit des tweaks',
+            'Acolyte reprend les idées utiles des guides d’optimisation, mais ne transforme pas un tweak populaire en “gain FPS” sans mesure. Les changements automatiques sont réversibles ; les réglages BIOS/OC restent séparés.',
+            COLORS['purple2']
+        )
+        rows=pc_optimizer.optimization_research_audit()
+        for row in rows:
+            status=row.get('status','')
+            color=COLORS['success'] if status in ('Automatique','A/B automatique') else COLORS['cyan'] if status in ('Mesuré','À maintenir','Diagnostic BIOS','Optionnel') else COLORS['warning']
+            card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=13,border_width=1,border_color='#203354')
+            card.pack(fill='x',padx=10,pady=4)
+            left=ctk.CTkFrame(card,fg_color='transparent');left.pack(side='left',fill='both',expand=True,padx=13,pady=10)
+            ctk.CTkLabel(left,text=row['name'],text_color=COLORS['text'],font=ctk.CTkFont(size=12,weight='bold')).pack(anchor='w')
+            ctk.CTkLabel(left,text=row['reason'],text_color=COLORS['muted'],font=ctk.CTkFont(size=9),wraplength=760,justify='left').pack(anchor='w',pady=(2,0))
+            right=ctk.CTkFrame(card,fg_color='transparent');right.pack(side='right',padx=12,pady=10)
+            ctk.CTkLabel(right,text=status,fg_color=color,corner_radius=999,text_color='#07101F' if status in ('Automatique','A/B automatique') else 'white',
+                font=ctk.CTkFont(size=8,weight='bold'),padx=9,pady=3).pack(anchor='e')
+            ctk.CTkLabel(right,text=row.get('action',''),text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=180,justify='right').pack(anchor='e',pady=(4,0))
+
     def _page_updates(self):
         self._hero('Mises à jour','Accès direct aux sources officielles. Acolyte ne prétend pas qu’un pilote est à jour sans vérification.',COLORS['cyan'])
         self._button_row([('Windows Update',lambda:self._open('updates'),COLORS['cyan2']),('AMD',lambda:self._open('amd'),COLORS['purple']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2']),('Intel',lambda:self._open('intel'),COLORS['panel2'])])
@@ -974,6 +1000,64 @@ class PCPremiumUI:
         details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
         if not messagebox.askyesno('Appliquer la sélection',details+'\n\nUne sauvegarde durable est créée avant modification. Continuer ?'):return
         self._run('Application des réglages',lambda:pc_optimizer.apply_selected(opts,self.app_dir),lambda x:self._after_mutation('Optimisation',x))
+
+    def complete_gaming_tune(self):
+        if self.busy:return
+        if not messagebox.askyesno(
+            'Auto-tune PC complet',
+            'Acolyte va appliquer les réglages gaming réversibles adaptés à ton matériel, régler la fréquence écran maximale détectée puis faire un test réseau avant/après.\n\n'
+            'Aucun overclock CPU/GPU/RAM, aucun tweak HPET/timer, aucune suppression de Defender ou de services critiques.\n\nContinuer ?'
+        ):return
+        self._run('Auto-tune PC complet',lambda:pc_optimizer.apply_complete_gaming_profile(self.app_dir),self._complete_gaming_done)
+
+    def _complete_gaming_done(self,result):
+        lines=[]
+        for step in result.get('steps',[]):
+            if step.get('warning'):lines.append('⚠ '+step.get('name','')+' : '+step['warning'])
+            else:lines.append('✓ '+step.get('name','')+' : '+str(step.get('result','')))
+        net=result.get('network_autotune') or {}
+        if net:
+            lines.append('')
+            lines.append('Réseau faible latence : '+('CONSERVÉ' if net.get('kept') else 'ANNULÉ'))
+            lines.append(f"Score réseau avant {float(net.get('before_score') or 0):.2f} → après {float(net.get('after_score') or 0):.2f}")
+        lines.append('')
+        lines.append(str(result.get('note','')))
+        self._show_result('Auto-tune PC terminé','\n'.join(lines))
+        self.parent.after(300,self.scan_full)
+
+    def autotune_network(self):
+        if self.busy:return
+        if not messagebox.askyesno(
+            'Auto-tune réseau faible latence',
+            'Acolyte va mesurer la passerelle, 1.1.1.1 et le endpoint Fortnite Europe, tester RSC/modération des interruptions puis restaurer automatiquement l’ancien réglage si le score réseau régresse de plus de 3 %.\n\nLa carte réseau peut se réinitialiser brièvement. Continuer ?'
+        ):return
+        self._run('Auto-tune réseau',lambda:pc_optimizer.autotune_network_low_latency(self.app_dir),self._autotune_network_done)
+
+    def _autotune_network_done(self,result):
+        lines=[result.get('message','Test terminé.')]
+        lines.append(f"Score avant : {float(result.get('before_score') or 0):.2f}")
+        lines.append(f"Score après : {float(result.get('after_score') or 0):.2f}")
+        lines.append('Décision : '+('profil conservé' if result.get('kept') else 'ancien réglage restauré'))
+        self._show_result('Auto-tune réseau','\n'.join(lines))
+        self.parent.after(250,self.scan_full)
+
+    def benchmark_fortnite_regions(self):
+        if self.busy:return
+        self._run('Serveurs Fortnite',pc_optimizer.fortnite_region_benchmark,self._fortnite_regions_done)
+
+    def _fortnite_regions_done(self,result):
+        best=result.get('best')
+        rows=sorted(result.get('regions') or [],key=lambda x:float(x.get('avg') or 9999))
+        lines=[]
+        if best:
+            lines.append(f"Meilleure région ICMP : {best.get('region')} • {float(best.get('avg') or 0):.1f} ms • jitter {float(best.get('jitter') or 0):.1f} ms • pertes {float(best.get('loss') or 0):.1f}%")
+            lines.append('')
+        for row in rows:
+            if float(row.get('avg') or 9999)>=9999:continue
+            lines.append(f"{row.get('region')} : {float(row.get('avg') or 0):.1f} ms • jitter {float(row.get('jitter') or 0):.1f} • pertes {float(row.get('loss') or 0):.1f}%")
+        lines.append('')
+        lines.append(result.get('note',''))
+        self._show_result('Régions Fortnite','\n'.join(lines))
 
     def optimize_smart(self):
         if not self.last_scan:
