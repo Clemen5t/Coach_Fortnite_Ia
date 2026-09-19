@@ -70,15 +70,23 @@ def _gateway():
     return out.strip() if not code and out.strip() else None
 
 def ping(host='1.1.1.1', count=16):
-    """Mesure ICMP Windows native, sans dépendre de PowerShell/.NET."""
-    host=str(ipaddress.IPv4Address(host))
+    """Mesure ICMP Windows native. Accepte une IPv4 ou un nom DNS explicite."""
+    original=str(host or '').strip()
+    if not original:raise ValueError('Hôte vide.')
+    try:
+        address=str(ipaddress.IPv4Address(original))
+    except ValueError:
+        if len(original)>253 or not re.fullmatch(r'[A-Za-z0-9.-]+',original):
+            raise ValueError('Nom d’hôte invalide.')
+        try:address=socket.gethostbyname(original)
+        except OSError as exc:raise RuntimeError('Résolution DNS impossible pour '+original+' : '+str(exc)) from exc
     count=int(count)
     if not 1 <= count <= 100:raise ValueError('Nombre de requêtes invalide.')
-    result={'host':host,'avg':None,'min':None,'max':None,'jitter':None,
+    result={'host':original,'address':address,'avg':None,'min':None,'max':None,'jitter':None,
             'loss':None,'received':0,'sent':count,'status':'error','detail':''}
     executable=str(Path(os.environ.get('SystemRoot',r'C:\Windows'))/'System32'/'PING.EXE')
     try:
-        out,err,code=_run([executable,'-4','-n',str(count),'-w','1500',host],
+        out,err,code=_run([executable,'-4','-n',str(count),'-w','1500',address],
                           timeout=count*2.5+5)
     except (OSError,subprocess.SubprocessError) as exc:
         result['detail']='Impossible de lancer ou terminer ping.exe : '+str(exc)
