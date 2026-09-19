@@ -1,3 +1,15 @@
+## Acolyte 2.2 — auto-tune mesuré & recherche anti-placebo
+
+- **Auto-tune PC complet** : base Windows/GPU/réseau réversible adaptée au matériel, fréquence écran maximale détectée puis test réseau avant/après.
+- **Auto-tune réseau faible latence** : RSS reste actif ; RSC et Interrupt Moderation sont testés quand le pilote les expose. Acolyte restaure automatiquement l’ancien réglage si la mesure régresse.
+- **Benchmark des régions Fortnite** avec les endpoints Epic : ping moyen, jitter et pertes.
+- **Profil Fortnite compétitif** réversible + benchmark FPS / 1 % low / 0,1 % low / stutters.
+- **Score séparé Santé / Gaming / Global**, sans donner les points du benchmark quand rien n’a été mesuré.
+- Nouvelle page **Méthode** : catalogue des optimisations automatiques, mesurées, manuelles ou refusées.
+- Les tweaks HPET/bcdedit timers, purges de standby RAM, suppressions massives de services et clés historiques non validées ne sont pas appliqués automatiquement.
+- Les launch arguments Fortnite populaires (`-LANPLAY`, `-NOSPLASH`, `-NOTEXTURESTREAMING`, `-USEALLAVAILABLECORES`) sont documentés mais pas forcés : ils ne constituent pas un gain universel démontré.
+- **Aucun overclock CPU/GPU/RAM automatique** : EXPO/PBO/Curve Optimizer/OC restent des réglages avancés qui exigent validation de stabilité, températures et tensions.
+
 
 ## Acolyte 2.1 — scores séparés et profils par jeu
 - Score global = 45 % santé Windows + 55 % performance gaming mesurable.
