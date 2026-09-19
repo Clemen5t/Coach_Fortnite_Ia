@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import hashlib
 from pathlib import Path
 import re
 import shutil
@@ -22,6 +23,24 @@ REQUIRED = {'coach.py','local_ai.py','updater.py','requirements.txt','VERSION','
 # Le bootstrap ci-dessous autorise uniquement ce nouveau module officiel lors de la transition.
 BOOTSTRAP_FILES = {'pc_optimizer.py','AcolyteLauncher.pyw'}
 LIMIT = 12 * 1024 * 1024
+
+def updater_data_dir(root):
+    """Stocke l'état de l'updater dans LocalAppData, jamais dans le dossier de l'app.
+    Cela évite les ACL/attributs hérités d'un ZIP, de Downloads ou d'un lancement admin.
+    """
+    root=Path(root).resolve()
+    base=Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir())/'AcolyteFortnite'/'Updater'
+    key=hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:16]
+    folder=base/key
+    folder.mkdir(parents=True,exist_ok=True)
+    return folder
+
+def updater_state_file(root):
+    return updater_data_dir(root)/'update-state.json'
+
+def updater_pending_file(root):
+    return updater_data_dir(root)/'pending.json'
+
 
 def read_json(path, default=None):
     try:return json.loads(Path(path).read_text(encoding='utf-8'))
@@ -93,35 +112,50 @@ def plan(root,repo,branch,download=fetch):
     meta=json.loads(download('https://api.github.com/repos/'+repo+'/commits/'+urllib.parse.quote(branch,safe='')))
     sha=meta.get('sha','')
     if not re.fullmatch('[a-f0-9]{40}',sha):raise ValueError('Révision GitHub invalide.')
-    state=read_json(Path(root)/'.update-state.json',{})
+    state=read_json(updater_state_file(root),{})
     if state.get('repo')==repo and state.get('sha')==sha:return None
     files,version=unpack(download('https://codeload.github.com/'+repo+'/zip/'+sha))
     return {'repo':repo,'sha':sha,'version':version,'files':files}
 
-def restore(root,journal):
-    root=Path(root);backup=root/'.updates'/journal['backup']
+def restore(root,journal,backup_root=None):
+    root=Path(root)
+    backup_root=Path(backup_root) if backup_root is not None else updater_data_dir(root)
+    backup=backup_root/journal['backup']
     if not re.fullmatch(r'backup-[a-f0-9]+',journal['backup']):raise ValueError('Sauvegarde invalide.')
     for name,existed in journal['old'].items():
-        if name not in FILES|{'.update-state.json'}:raise ValueError('Restauration invalide.')
+        if name not in FILES:raise ValueError('Restauration invalide.')
         target=root/name
         if existed:shutil.copyfile(backup/name,target)
         elif target.exists():target.unlink()
 
+def _recover_legacy(root):
+    """Récupère au mieux une mise à jour interrompue par une ancienne version."""
+    root=Path(root)
+    legacy=root/'.updates'
+    path=legacy/'pending.json'
+    try:journal=read_json(path)
+    except (OSError,PermissionError):return False
+    if not journal:return False
+    restore(root,journal,legacy)
+    try:path.unlink()
+    except OSError:pass
+    return True
+
 def recover(root):
-    root=Path(root);path=root/'.updates'/'pending.json'
+    root=Path(root)
+    path=updater_pending_file(root)
     journal=read_json(path)
     if journal:
         restore(root,journal);path.unlink()
         return True
-    return False
+    return _recover_legacy(root)
 
 def apply(root,update,replace=os.replace):
     root=Path(root).resolve();recover(root)
-    folder=root/'.updates';folder.mkdir(exist_ok=True)
+    folder=updater_data_dir(root)
     backup=folder/('backup-'+uuid.uuid4().hex);backup.mkdir()
     contents=dict(update['files'])
     if not set(contents).issubset(FILES):raise ValueError('Fichier non autorisé.')
-    contents['.update-state.json']=json.dumps({k:update[k] for k in ('repo','sha','version')}).encode()
     old={}
     for name in contents:
         target=root/name
@@ -129,14 +163,22 @@ def apply(root,update,replace=os.replace):
         old[name]=target.exists()
         if old[name]:shutil.copyfile(target,backup/name)
     journal={'backup':backup.name,'old':old}
+    pending=updater_pending_file(root)
     with tempfile.TemporaryDirectory(prefix='stage-',dir=folder) as stage:
         for name,data in contents.items():(Path(stage)/name).write_bytes(data)
-        write_json(folder/'pending.json',journal)
+        write_json(pending,journal)
         try:
             for name in contents:replace(Path(stage)/name,root/name)
-            (folder/'pending.json').unlink()
+            write_json(updater_state_file(root),{k:update[k] for k in ('repo','sha','version')})
+            pending.unlink()
         except Exception:
-            restore(root,journal);(folder/'pending.json').unlink();raise
+            restore(root,journal)
+            try:pending.unlink()
+            except OSError:pass
+            raise
+    # Ancien état local : il n'est plus lu. Suppression best-effort seulement.
+    try:(root/'.update-state.json').unlink()
+    except OSError:pass
     return backup
 
 if __name__=='__main__':
