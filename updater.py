@@ -25,15 +25,28 @@ BOOTSTRAP_FILES = {'pc_optimizer.py','AcolyteLauncher.pyw'}
 LIMIT = 12 * 1024 * 1024
 
 def updater_data_dir(root):
-    """Stocke l'état de l'updater dans LocalAppData, jamais dans le dossier de l'app.
-    Cela évite les ACL/attributs hérités d'un ZIP, de Downloads ou d'un lancement admin.
+    """État de l'updater dans un dossier utilisateur réellement inscriptible.
+    Aucun fichier d'état n'est requis dans le dossier de l'application.
     """
     root=Path(root).resolve()
-    base=Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir())/'AcolyteFortnite'/'Updater'
     key=hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:16]
-    folder=base/key
-    folder.mkdir(parents=True,exist_ok=True)
-    return folder
+    candidates=[
+        Path(os.environ.get('LOCALAPPDATA') or '')/'AcolyteFortnite'/'Updater'/key,
+        Path.home()/'AppData'/'Local'/'AcolyteFortnite'/'Updater'/key,
+        Path(tempfile.gettempdir())/'AcolyteFortnite-Updater'/key,
+    ]
+    last=None
+    for folder in candidates:
+        if not str(folder):continue
+        try:
+            folder.mkdir(parents=True,exist_ok=True)
+            probe=folder/'.write-test'
+            probe.write_text('ok',encoding='utf-8')
+            probe.unlink()
+            return folder
+        except OSError as exc:
+            last=exc
+    raise PermissionError('Aucun dossier utilisateur inscriptible pour les mises à jour.') from last
 
 def updater_state_file(root):
     return updater_data_dir(root)/'update-state.json'
@@ -44,11 +57,20 @@ def updater_pending_file(root):
 
 def read_json(path, default=None):
     try:return json.loads(Path(path).read_text(encoding='utf-8'))
-    except FileNotFoundError:return default
+    except (FileNotFoundError,PermissionError,OSError,json.JSONDecodeError):
+        return default
 
 def write_json(path, data):
-    path=Path(path);tmp=path.with_name(path.name+'.tmp')
-    tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8');os.replace(tmp,path)
+    path=Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_name(path.name+'.tmp')
+    try:
+        tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+        os.replace(tmp,path)
+    finally:
+        try:
+            if tmp.exists():tmp.unlink()
+        except OSError:pass
 
 def normalize_repo(value):
     value=value.strip().rstrip('/')
@@ -176,9 +198,8 @@ def apply(root,update,replace=os.replace):
             try:pending.unlink()
             except OSError:pass
             raise
-    # Ancien état local : il n'est plus lu. Suppression best-effort seulement.
-    try:(root/'.update-state.json').unlink()
-    except OSError:pass
+    # L'ancien .update-state.json éventuel est volontairement ignoré.
+    # Il peut appartenir à une ancienne ACL/admin ; ne jamais le toucher.
     return backup
 
 if __name__=='__main__':
