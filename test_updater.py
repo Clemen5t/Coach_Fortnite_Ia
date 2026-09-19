@@ -77,4 +77,58 @@ class Tests(unittest.TestCase):
             updater.write_json(updater.updater_state_file(folder),{'repo':'name/coach','sha':'b'*40})
             self.assertIsNone(updater.plan(folder,'name/coach','main',lambda u:json.dumps({'sha':'b'*40}).encode()))
 
+
+class RestartEnvironmentTests(unittest.TestCase):
+    def test_independent_environment_drops_private_pyinstaller_state(self):
+        with patch.dict(updater.os.environ,{
+            '_PYI_APPLICATION_HOME_DIR':r'C:\Temp\_MEI12345',
+            '_PYI_PARENT_PROCESS_LEVEL':'1',
+            '_PYI_ARCHIVE_FILE':r'C:\Acolyte.exe',
+            'KEEP_ME':'yes'
+        },clear=True):
+            env=updater._independent_child_environment()
+        self.assertEqual(env.get('KEEP_ME'),'yes')
+        self.assertEqual(env.get('PYINSTALLER_RESET_ENVIRONMENT'),'1')
+        self.assertFalse(any(k.startswith('_PYI_') for k in env))
+
+    def test_self_replace_helper_is_spawned_with_reset_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder)
+            staged=base/'staged.exe';staged.write_bytes(b'new')
+            current=base/'Acolyte.exe';current.write_bytes(b'old')
+            seen={}
+            class Dummy:
+                pass
+            def fake_popen(args,**kwargs):
+                seen['args']=args;seen.update(kwargs);return Dummy()
+            with patch.dict(updater.os.environ,{
+                'LOCALAPPDATA':str(base/'local'),
+                '_PYI_APPLICATION_HOME_DIR':r'C:\Temp\_MEI99999',
+                '_PYI_PARENT_PROCESS_LEVEL':'1',
+                'NORMAL':'ok'
+            },clear=True), patch.object(updater.subprocess,'Popen',side_effect=fake_popen):
+                updater._schedule_self_replace(staged,current)
+            env=seen.get('env') or {}
+            self.assertEqual(env.get('PYINSTALLER_RESET_ENVIRONMENT'),'1')
+            self.assertEqual(env.get('NORMAL'),'ok')
+            self.assertFalse(any(k.startswith('_PYI_') for k in env))
+            helper=Path(seen['args'][-1])
+            script=helper.read_text(encoding='utf-8')
+            self.assertIn("PYINSTALLER_RESET_ENVIRONMENT='1'",script)
+            self.assertIn("_PYI_*",script)
+
+    def test_shell_launch_sets_reset_variable_only_for_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'Acolyte.exe';target.write_bytes(b'x')
+            observed={}
+            def fake_startfile(path):
+                observed['path']=path
+                observed['reset']=updater.os.environ.get('PYINSTALLER_RESET_ENVIRONMENT')
+            with patch.dict(updater.os.environ,{'KEEP':'1'},clear=True),patch.object(updater.os,'startfile',side_effect=fake_startfile,create=True):
+                updater._start_independent_exe(target)
+                self.assertNotIn('PYINSTALLER_RESET_ENVIRONMENT',updater.os.environ)
+            self.assertEqual(observed.get('reset'),'1')
+            self.assertEqual(Path(observed.get('path')).resolve(),target.resolve())
+
+
 if __name__=='__main__':unittest.main()
