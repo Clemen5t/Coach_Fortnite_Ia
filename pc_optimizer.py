@@ -318,12 +318,32 @@ class WindowsSettings:
         elif kind == 'net_eee':
             name=spec['name'].replace("'","''")
             rows=value if isinstance(value,list) else ([] if value is None else [value])
+            changed=0
             for row in rows:
-                keyword=str(row.get('RegistryKeyword') or '').replace("'","''")
-                display=str(row.get('DisplayValue') or '').replace("'","''")
+                keyword=str(row.get('RegistryKeyword') or '').strip().replace("'","''")
                 if not keyword:continue
-                out,err,code=_ps(f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -DisplayValue '{display}' -NoRestart -ErrorAction Stop")
-                if code:raise RuntimeError(err or out or 'Modification EEE refusée.')
+                display_raw=row.get('DisplayValue')
+                display='' if display_raw is None else str(display_raw).strip()
+                registry_raw=row.get('RegistryValue')
+                if display:
+                    safe_display=display.replace("'","''")
+                    script=f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -DisplayValue '{safe_display}' -NoRestart -ErrorAction Stop"
+                elif registry_raw not in (None,'',[]):
+                    vals=registry_raw if isinstance(registry_raw,list) else [registry_raw]
+                    vals=[str(x).strip() for x in vals if str(x).strip()!='']
+                    if not vals:continue
+                    psvals="@("+",".join("'"+x.replace("'","''")+"'" for x in vals)+")"
+                    script=f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -RegistryValue {psvals} -NoRestart -ErrorAction Stop"
+                else:
+                    # Anciennes sauvegardes pouvaient ne pas contenir RegistryValue.
+                    # Ne jamais envoyer -DisplayValue '' au pilote.
+                    continue
+                out,err,code=_ps(script)
+                if code:
+                    raise RuntimeError("Le pilote réseau a refusé le réglage "+keyword+". Relance le scan : Acolyte resynchronisera l’état réel sans réessayer une valeur vide.")
+                changed+=1
+            if rows and changed==0:
+                raise RuntimeError("Aucune valeur EEE/Green Ethernet restaurable n’est exposée par ce pilote.")
         elif kind == 'tcp_baseline':
             name=spec['name'].replace("'","''")
             if value.get('rss'):
@@ -375,6 +395,23 @@ def set_feature_desired(root, option, enabled):
 def desired_drift(root, states):
     wanted=desired_features(root)
     return [key for key in wanted if states.get(key) is False]
+
+def reapply_persistent_features(root, options=None):
+    options=list(options if options is not None else desired_features(root).keys())
+    applied=[];failed=[]
+    for option in options:
+        if option not in OPTIONS:continue
+        try:
+            optimize(root,[option])
+            applied.append(option)
+        except Exception as exc:
+            # Un pilote peut ne plus exposer le même réglage après mise à jour/redémarrage.
+            # On coupe la persistance de CE réglage seulement pour éviter une boucle d'erreur.
+            set_feature_desired(root,option,False)
+            message=str(exc).replace('\r',' ').replace('\n',' ')
+            if len(message)>260:message=message[:257]+'...'
+            failed.append({'option':option,'name':OPTIONS[option][0],'error':message})
+    return {'applied':applied,'failed':failed}
 
 def _load_state(root, backend):
     path = Path(root)/JOURNAL_NAME
@@ -533,11 +570,19 @@ def _feature_changes(option, backend):
             rows=current if isinstance(current,list) else ([] if current is None else [current])
             target=[]
             for row in rows:
+                keyword=str(row.get('RegistryKeyword') or '').strip()
                 values=row.get('ValidDisplayValues') or []
                 if isinstance(values,str):values=[values]
-                chosen=next((v for v in values if str(v).lower() in ('disabled','désactivé','off')),None)
-                if chosen is None:continue
-                target.append({'RegistryKeyword':row.get('RegistryKeyword'),'DisplayValue':chosen,'ValidDisplayValues':values})
+                chosen=next((str(v).strip() for v in values if str(v).strip().lower() in ('disabled','désactivé','off')),None)
+                if not keyword or not chosen:continue
+                target.append({
+                    'RegistryKeyword':keyword,
+                    'DisplayName':row.get('DisplayName'),
+                    'DisplayValue':chosen,
+                    'RegistryValue':row.get('RegistryValue'),
+                    'ValidDisplayValues':values,
+                    'ValidRegistryValues':row.get('ValidRegistryValues')
+                })
             if not target:raise RuntimeError('Le pilote réseau n’expose aucune option EEE/Green Ethernet désactivable automatiquement.')
             changes.append((spec,target))
         else:
