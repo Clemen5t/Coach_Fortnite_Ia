@@ -289,4 +289,30 @@ class GameProfileTests(unittest.TestCase):
         self.assertEqual(breakdown['Benchmark réel'],0)
         self.assertTrue(any(x.get('title')=='Benchmark Fortnite manquant' for x in rec))
 
+
+class CompetitiveResearchTests(unittest.TestCase):
+    def test_competitive_pack_stays_conservative(self):
+        self.assertIn('game',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertIn('captures',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertIn('tcp_baseline',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertNotIn('vbs_off',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertNotIn('nagle_off',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertNotIn('net_low_latency',pc.COMPETITIVE_SAFE_OPTIONS)
+        self.assertNotIn('hags_on',pc.COMPETITIVE_SAFE_OPTIONS)
+
+    def test_research_audit_marks_amd_competitive_guidance(self):
+        scan={
+            'system':{'gpu':'AMD Radeon RX 7900 XT','cpu':'AMD Ryzen 7 7800X3D'},
+            'settings':{'feature_states':{
+                'game':True,'captures':True,'balanced':True,'mouse_accel_off':True,
+                'tcp_baseline':True,'hags_on':False
+            }}
+        }
+        audit=pc.gaming_research_audit(scan)
+        keys={x['key'] for x in audit['cards']}
+        self.assertIn('amd_antilag',keys)
+        self.assertIn('amd_chill',keys)
+        self.assertIn('hypr_rx',keys)
+        self.assertTrue(any('HPET' in x for x in audit['excluded']))
+
 if __name__=='__main__':unittest.main()
