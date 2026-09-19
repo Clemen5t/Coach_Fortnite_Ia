@@ -612,6 +612,9 @@ class PCPremiumUI:
             ('DISQUE C:',f"{telemetry.get('disk_percent','—')} %",'Occupation du volume système',COLORS['gold']),
             ('CPU TEMP',f"{telemetry.get('cpu_temp_c','—')} °C",'Capteur réel si disponible',COLORS['warning']),
             ('GPU TEMP',f"{telemetry.get('gpu_temp_c','—')} °C",f"Hotspot {telemetry.get('gpu_hotspot_c','—')} °C",COLORS['warning']),
+            ('CPU POWER',f"{telemetry.get('cpu_power_w','—')} W",'Puissance package si le capteur l’expose',COLORS['cyan']),
+            ('GPU POWER',f"{telemetry.get('gpu_power_w','—')} W",'Puissance GPU si le capteur l’expose',COLORS['purple2']),
+            ('GPU CLOCK',f"{telemetry.get('gpu_clock_mhz','—')} MHz",'Fréquence cœur GPU mesurée',COLORS['success']),
         ]
         grid=ctk.CTkFrame(self.content,fg_color='transparent');grid.pack(fill='x',padx=8,pady=(2,8))
         for col in range(3):grid.grid_columnconfigure(col,weight=1,uniform='mon')
@@ -642,6 +645,9 @@ class PCPremiumUI:
             'DISQUE C:':f"{telemetry.get('disk_percent','—')} %",
             'CPU TEMP':f"{telemetry.get('cpu_temp_c','—')} °C",
             'GPU TEMP':f"{telemetry.get('gpu_temp_c','—')} °C",
+            'CPU POWER':f"{telemetry.get('cpu_power_w','—')} W",
+            'GPU POWER':f"{telemetry.get('gpu_power_w','—')} W",
+            'GPU CLOCK':f"{telemetry.get('gpu_clock_mhz','—')} MHz",
         }
         for key,text in values.items():
             widget=self.monitor_value_labels.get(key)
@@ -767,9 +773,11 @@ class PCPremiumUI:
     def _windows_updates_done(self,rows):
         if not rows:
             return self._show_result('Windows Update','Aucune mise à jour en attente remontée par Windows Update.')
-        lines=[f"{len(rows)} mise(s) à jour en attente :",'']
+        drivers=[row for row in rows if str(row.get('Type') or '').casefold()=='driver']
+        lines=[f"{len(rows)} mise(s) à jour en attente • {len(drivers)} pilote(s) proposé(s) par Windows Update",'']
         for row in rows[:30]:
-            lines.append(f"• {row.get('Title','Mise à jour')}"+(f" • KB {row.get('KB')}" if row.get('KB') else ''))
+            prefix='[PILOTE] ' if str(row.get('Type') or '').casefold()=='driver' else ''
+            lines.append(f"• {prefix}{row.get('Title','Mise à jour')}"+(f" • KB {row.get('KB')}" if row.get('KB') else ''))
         self._show_result('Windows Update','\n'.join(lines))
 
     def _page_performance(self):
