@@ -2119,6 +2119,62 @@ def gaming_score_scan(scan):
     for key,maxv in maxima.items():breakdown[key]=max(0,min(maxv,int(breakdown[key])))
     return sum(breakdown.values()),breakdown,rec
 
+def complete_gaming_profile_options():
+    """Profil PC gaming global : uniquement des changements réversibles et suivis."""
+    info=analyze()
+    gpu=str(info.get('gpu') or '').casefold()
+    cpu=str(info.get('cpu') or '').casefold()
+    options=[
+        'game','captures','background_apps','mouse_accel_off',
+        'p2p_off','net_power','net_eee','tcp_baseline'
+    ]
+    # Ryzen X3D : conserver Balanced comme base stable ; AMD publie aussi ses tests Ryzen en Balanced.
+    if 'x3d' in cpu or 'ryzen' in cpu:options.append('balanced')
+    if 'radeon rx' in gpu:options.append('amd_gpu')
+    return list(dict.fromkeys(options))
+
+def apply_complete_gaming_profile(root):
+    """Applique la base PC, met l'écran au Hz max et A/B teste le profil réseau faible latence."""
+    if os.name!='nt':raise RuntimeError('Le profil complet nécessite Windows.')
+    report={'options':complete_gaming_profile_options(),'steps':[]}
+    report['steps'].append({'name':'Base Windows / GPU / réseau','result':apply_batch(root,report['options'],[])})
+    try:
+        report['steps'].append({'name':'Fréquence écran','result':set_max_refresh_rate()})
+    except Exception as exc:
+        report['steps'].append({'name':'Fréquence écran','warning':str(exc)})
+    try:
+        net=autotune_network_low_latency(root)
+        report['network_autotune']=net
+        report['steps'].append({'name':'Auto-tune réseau','result':net.get('message')})
+    except Exception as exc:
+        report['steps'].append({'name':'Auto-tune réseau','warning':str(exc)})
+    report['reboot_recommended']=True
+    report['note']='Le profil évite les tweaks timer/HPET, les suppressions massives de services, les purges mémoire et les overclocks automatiques. Mesure ensuite Fortnite avant/après.'
+    return report
+
+def optimization_research_audit():
+    """Catalogue intégré des tweaks vus dans les guides/vidéos et de la politique Acolyte."""
+    return [
+        {'name':'Pilotes GPU/chipset/BIOS','status':'À maintenir','action':'Diagnostic + liens officiels','reason':'Les pilotes/firmwares et la RAM correctement configurée font partie des fondamentaux mesurables.'},
+        {'name':'Mode Jeu / Game DVR','status':'Automatique','action':'Game Mode ON, captures OFF','reason':'Réglages Windows gaming explicites et réversibles.'},
+        {'name':'GPU haute performance par jeu','status':'Automatique','action':'Profil Windows par exécutable','reason':'Évite qu’un jeu parte sur le mauvais GPU et reste réversible.'},
+        {'name':'HAGS','status':'Mesuré','action':'Activé dans le profil AMD, benchmark conseillé','reason':'Le bénéfice dépend du jeu/pilote ; pas présenté comme gain garanti.'},
+        {'name':'RSS + TCP Auto-Tuning Normal','status':'Automatique','action':'Base réseau saine','reason':'Microsoft recommande RSS sur NIC compatible et Auto-Tuning Normal pour les scénarios TCP standards.'},
+        {'name':'RSC + Interrupt Moderation','status':'A/B automatique','action':'Test faible latence puis rollback si régression','reason':'Peut réduire la latence au prix de CPU/débit selon le matériel.'},
+        {'name':'DNS','status':'Optionnel','action':'Mesure du résolveur uniquement','reason':'Accélère surtout la résolution de noms, pas le ping d’une partie déjà connectée.'},
+        {'name':'EXPO/XMP','status':'Diagnostic BIOS','action':'Détection des fréquences, pas d’écriture BIOS','reason':'Gain réel possible, mais l’activation BIOS doit rester contrôlée et testée pour la stabilité.'},
+        {'name':'PBO / Curve Optimizer / OC GPU-RAM','status':'Manuel avancé','action':'Non automatisé','reason':'Peut gagner des performances mais implique tension, température et stabilité propres à chaque puce.'},
+        {'name':'VBS / Memory Integrity','status':'Avancé','action':'Option séparée avec avertissement sécurité','reason':'Peut avoir un coût selon les charges mais désactiver réduit la sécurité.'},
+        {'name':'-LANPLAY','status':'Non appliqué','action':'Audit seulement','reason':'Argument Unreal documenté pour réseau LAN ; il peut augmenter les mises à jour et saturer la bande passante, ce n’est pas un boost Fortnite garanti.'},
+        {'name':'-NOSPLASH','status':'Non appliqué','action':'Audit seulement','reason':'Supprime l’image de démarrage ; aucun gain FPS en partie.'},
+        {'name':'-NOTEXTURESTREAMING','status':'Non appliqué','action':'Audit seulement','reason':'Charge les textures au lieu de les streamer et peut augmenter fortement l’usage VRAM.'},
+        {'name':'-USEALLAVAILABLECORES','status':'Non appliqué','action':'Audit seulement','reason':'Argument Unreal existant, mais pas de preuve qu’il améliore Fortnite actuel sur un 7800X3D.'},
+        {'name':'HPET / bcdedit timers / timer hacks','status':'Refusé','action':'Jamais automatique','reason':'Tweaks Internet souvent non mesurés, pouvant dégrader la latence ou perturber l’horloge système.'},
+        {'name':'NetworkThrottlingIndex / SystemResponsiveness','status':'Refusé','action':'Jamais automatique','reason':'Clés historiques fréquemment copiées sans validation actuelle et sans bénéfice universel.'},
+        {'name':'Purge standby RAM','status':'Refusé','action':'Jamais automatique','reason':'Force Windows à recharger des données et peut provoquer plus de stutters.'},
+        {'name':'Custom Windows / services massivement supprimés','status':'Refusé','action':'Pas de debloat destructif','reason':'Les gains sont difficiles à attribuer et le risque de casse, sécurité ou mises à jour est élevé.'},
+    ]
+
 def recommended_options(scan):
     settings=scan.get('settings') or {}
     states=settings.get('feature_states') or {}
