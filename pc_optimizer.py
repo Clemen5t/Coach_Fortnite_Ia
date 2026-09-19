@@ -131,6 +131,11 @@ REG_SETTINGS = {
     'hags': ('HKLM', r'SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'HwSchMode'),
     'fast_startup': ('HKLM', r'SYSTEM\CurrentControlSet\Control\Session Manager\Power', 'HiberbootEnabled'),
     'delivery_p2p': ('HKLM', r'SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization', 'DODownloadMode'),
+    'telemetry_level': ('HKLM', r'SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'AllowTelemetry'),
+    'vbs': ('HKLM', r'SYSTEM\CurrentControlSet\Control\DeviceGuard', 'EnableVirtualizationBasedSecurity'),
+    'hvci': ('HKLM', r'SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity', 'Enabled'),
+    'explorer_sync_ads': (r'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'ShowSyncProviderNotifications'),
+    'explorer_launch_to': (r'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'LaunchTo'),
 }
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 BALANCED = '381b4222-f694-41f0-9685-ff5bb260df2e'
@@ -166,6 +171,11 @@ OPTIONS = {
     'nagle_off': ('Tester sans Nagle sur l’interface active', 'Option avancée : peut réduire la latence de petits paquets, à comparer avant/après.'),
     'p2p_off': ('Désactiver le partage P2P des mises à jour', 'Force Delivery Optimization à ne pas utiliser le P2P.'),
     'amd_gpu': ('Optimisation GPU AMD', 'Applique les réglages Windows gaming sûrs + priorité GPU élevée pour Fortnite ; aucun overclocking.'),
+    'telemetry_min': ('Réduire la télémétrie Windows', 'Force le niveau de données de diagnostic au minimum autorisé par l’édition de Windows.'),
+    'vbs_off': ('Désactiver VBS / Memory Integrity', 'Option avancée : peut réduire une surcharge de virtualisation mais diminue la sécurité. Redémarrage requis.'),
+    'explorer_tweaks': ('Optimiser l’Explorateur Windows', 'Réduit les notifications promotionnelles de l’Explorateur et ouvre directement Ce PC.'),
+    'background_services': ('Réduire les services de télémétrie', 'Désactive uniquement les services de télémétrie Windows ciblés quand ils existent.'),
+    'tcp_baseline': ('Réactivité réseau Windows', 'Réactive RSS et conserve l’auto-tuning TCP en mode normal pour une base saine.'),
 }
 APP_CANDIDATES = {
     'Microsoft.BingNews': 'Actualités Microsoft',
