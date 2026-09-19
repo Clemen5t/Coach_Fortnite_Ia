@@ -144,6 +144,14 @@ class StateSyncTests(unittest.TestCase):
                 local.assert_called_once()
                 elevated.assert_called_once()
 
+    def test_net_low_latency_is_admin_option(self):
+        self.assertIn('net_low_latency',pc.ADMIN_OPTIONS)
+
+    def test_network_quality_score_penalizes_jitter_and_loss(self):
+        a=[{'avg':10,'jitter':1,'loss':0}]
+        b=[{'avg':10,'jitter':5,'loss':1}]
+        self.assertLess(pc._network_quality_score(a),pc._network_quality_score(b))
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
