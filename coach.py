@@ -857,7 +857,11 @@ class PCPremiumUI:
                 ctk.CTkLabel(body,text=str(row.get('name') or 'Jeu'),text_color=COLORS['text'],font=ctk.CTkFont(size=12,weight='bold')).pack(anchor='w')
                 ctk.CTkLabel(body,text=str(row.get('launcher') or 'Local')+' • '+('EXE trouvé' if row.get('exe') else 'EXE à détecter'),text_color=COLORS['muted'],font=ctk.CTkFont(size=8)).pack(anchor='w',pady=(2,0))
                 cmd=(self.optimize_fortnite if str(row.get('name') or '').casefold()=='fortnite' else (lambda game=dict(row):self.optimize_game(game)))
-                ctk.CTkButton(g,text='⚡ OPTIMISER',command=cmd,width=110,height=32,corner_radius=9,fg_color=COLORS['purple']).pack(side='right',padx=10,pady=10)
+                actions=ctk.CTkFrame(g,fg_color='transparent');actions.pack(side='right',padx=10,pady=8)
+                ctk.CTkButton(actions,text='⚡ OPTIMISER',command=cmd,width=110,height=30,corner_radius=9,fg_color=COLORS['purple']).pack(pady=(0,5))
+                auto_var=tk.BooleanVar(value=pc_optimizer.auto_game_profile_enabled(row))
+                ctk.CTkSwitch(actions,text='AUTO',variable=auto_var,width=88,progress_color=COLORS['success'],
+                    command=lambda game=dict(row),v=auto_var:self.set_auto_game(game,bool(v.get()))).pack()
 
         card=ctk.CTkFrame(self.content,fg_color=COLORS['panel'],corner_radius=15,border_width=1,border_color='#1C3153')
         card.pack(fill='x',padx=10,pady=5)
@@ -887,15 +891,27 @@ class PCPremiumUI:
         ctk.CTkLabel(row,text='Phase',text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(side='left',padx=(0,6))
         ctk.CTkComboBox(row,variable=self.game_phase_var,values=['AVANT optimisation','APRÈS optimisation','Libre'],width=165,state='readonly').pack(side='left',padx=(0,12))
         self.game_bench_btn=ctk.CTkButton(row,text='▶  DÉMARRER LE BENCHMARK',command=self.start_game_benchmark,width=205,height=38,corner_radius=10,fg_color=COLORS['purple'])
-        self.game_bench_btn.pack(side='left')
+        self.game_bench_btn.pack(side='left',padx=(0,12))
+        ctk.CTkSwitch(row,text='Rollback auto si régression',variable=self.auto_rollback_var,
+            command=self.set_auto_rollback,progress_color=COLORS['success'],font=ctk.CTkFont(size=9,weight='bold')).pack(side='left')
 
         history=pc_optimizer.benchmark_history(5)
         if history:
             self._render_game_result(history[-1],history[-2] if len(history)>1 else None)
             self._render_game_history(history)
+            pair=pc_optimizer.latest_before_after_pair()
+            if pair:
+                cmp=pair.get('comparison') or {}
+                self._action_card('Verdict AVANT / APRÈS',str(cmp.get('verdict','Variation à confirmer')),
+                    'Mesuré','FPS / 1% low / stutters','Nul')
         else:
             self._action_card('Aucun benchmark enregistré','Installe PresentMon si nécessaire, lance Fortnite, choisis 60 secondes puis démarre le benchmark.','Prêt','Mesuré','Nul')
 
+        pending=pc_optimizer.pending_regression_rollback()
+        if pending:
+            self._action_card('Rollback en attente',
+                str(pending.get('reason','Régression détectée'))+' Ferme Fortnite : Acolyte restaurera alors les réglages suivis sans modifier un fichier du jeu en cours d’utilisation.',
+                'Automatique différé','Sécurité','Faible')
         self._button_row([('DÉTECTER LES JEUX INSTALLÉS',self.load_games,COLORS['panel2'])])
 
     def optimize_game(self,game):
@@ -911,6 +927,7 @@ class PCPremiumUI:
             'Aucun fichier du jeu, aucune touche, résolution ou option graphique interne ne sera modifié pour ce profil générique.'
         )
         if not messagebox.askyesno('Optimisation par jeu',msg):return
+        pc_optimizer.create_optimization_checkpoint('Optimisation '+name)
         self._run('Optimisation '+name,lambda g=dict(game):pc_optimizer.apply_generic_game_profile(self.app_dir,g),self._generic_game_done)
 
     def _generic_game_done(self,result):
@@ -937,6 +954,7 @@ class PCPremiumUI:
             'Le renderer, la résolution et les touches ne sont pas modifiés.'
         )
         if not messagebox.askyesno('Optimiser Fortnite',msg):return
+        pc_optimizer.create_optimization_checkpoint('Optimisation Fortnite')
         self._run('Optimisation Fortnite',lambda:pc_optimizer.apply_fortnite_profile(self.app_dir),self._fortnite_profile_done)
 
     def _fortnite_profile_done(self,result):
@@ -1045,9 +1063,10 @@ class PCPremiumUI:
         self._metric_box(metrics,'FRAMETIME',float(result.get('avg_frametime_ms') or 0),'ms',COLORS['gold'])
         self._draw_frametime_chart(card,result.get('frametime_sample') or [])
         if previous:
-            comp=pc_optimizer.compare_game_benchmarks(previous,result)
+            detailed=pc_optimizer.compare_benchmark_pair(previous,result)
+            comp=detailed.get('metrics') or {}
             line=ctk.CTkFrame(card,fg_color='#0A172A',corner_radius=10);line.pack(fill='x',padx=12,pady=(2,11))
-            pieces=[]
+            pieces=[str(detailed.get('verdict',''))]
             for key,label in [('avg_fps','FPS'),('one_percent_low','1% low'),('point_one_percent_low','0,1% low')]:
                 d=comp.get(key,{})
                 pct=d.get('percent')
