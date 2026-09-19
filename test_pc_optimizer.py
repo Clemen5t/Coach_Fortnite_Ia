@@ -51,6 +51,23 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(pc.benchmark(),['1.1.1.1','8.8.8.8'])
 
 
+class RebootHelperTests(unittest.TestCase):
+    def test_firmware_reboot_uses_fw_flag(self):
+        with patch.object(pc.os,'name','nt'),patch.object(pc,'is_admin',return_value=True),patch.object(pc,'_run',return_value=('', '', 0)) as run:
+            self.assertIn('UEFI',pc.reboot_to_firmware())
+        run.assert_called_once_with(['shutdown.exe','/r','/fw','/t','0'])
+
+    def test_firmware_error_keeps_windows_exit_code(self):
+        with patch.object(pc.os,'name','nt'),patch.object(pc,'is_admin',return_value=True),patch.object(pc,'_run',return_value=('', 'Erreur système', 203)):
+            with self.assertRaisesRegex(RuntimeError,'203'):
+                pc.reboot_to_firmware()
+
+    def test_advanced_startup_uses_options_flag(self):
+        with patch.object(pc.os,'name','nt'),patch.object(pc,'is_admin',return_value=True),patch.object(pc,'_run',return_value=('', '', 0)) as run:
+            self.assertIn('démarrage avancé',pc.reboot_to_advanced_startup())
+        run.assert_called_once_with(['shutdown.exe','/r','/o','/t','0'])
+
+
 class StateSyncTests(unittest.TestCase):
     class FakeBackend:
         identity={'machine':'test','sid':'test'}
