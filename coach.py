@@ -15,23 +15,42 @@ except ImportError:
     pc_optimizer=None
 import json
 
-APP_DIR=Path(__file__).resolve().parent
+FROZEN=bool(getattr(sys,'frozen',False))
+BUNDLE_DIR=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
+INSTALL_DIR=Path(sys.executable).resolve().parent if FROZEN else BUNDLE_DIR
+APP_DIR=INSTALL_DIR if FROZEN else BUNDLE_DIR
 DATA_DIR=Path(os.environ.get('LOCALAPPDATA') or (Path.home()/'AppData'/'Local'))/'AcolyteFortnite'
 DATA_DIR.mkdir(parents=True,exist_ok=True)
+MODEL_DIR=DATA_DIR/'Models'
+MODEL_DIR.mkdir(parents=True,exist_ok=True)
 SETTINGS_FILE=DATA_DIR/'settings.json'
 UPDATE_CONFIG_FILE=DATA_DIR/'update-config.json'
 DEFAULT_REPO='Clemen5t/Coach_Fortnite_Ia'
-VERSION=(APP_DIR/'VERSION').read_text().strip()
+VERSION=(BUNDLE_DIR/'VERSION').read_text().strip()
 
 def _migrate_user_file(name,target):
-    old=APP_DIR/name
+    old=BUNDLE_DIR/name
     if target.exists() or not old.exists():return
     try:
         target.write_bytes(old.read_bytes())
     except OSError:pass
 
+def _migrate_model_dir(name):
+    target=MODEL_DIR/name
+    if target.exists():return
+    candidates=[BUNDLE_DIR/name,INSTALL_DIR/name]
+    for old in candidates:
+        if old.exists() and old.is_dir():
+            try:
+                shutil.copytree(old,target,dirs_exist_ok=True)
+                return
+            except OSError:
+                pass
+
 _migrate_user_file('settings.json',SETTINGS_FILE)
 _migrate_user_file('update-config.json',UPDATE_CONFIG_FILE)
+_migrate_model_dir('.voice')
+_migrate_model_dir('.whisper')
 
 import mss
 import numpy as np
@@ -108,11 +127,13 @@ class VoiceEngine:
     def ensure_tts(self,status=lambda x:None):
         if not self.voice_model.exists():
             status('Premier lancement : téléchargement de la voix IA française Piper…')
-            cmd=[sys.executable,'-m','piper.download_voices',VOICE_NAME,'--data-dir',str(self.data)]
-            result=subprocess.run(cmd,cwd=str(self.data),capture_output=True,text=True,timeout=300)
-            if result.returncode!=0 or not self.voice_model.exists():
-                detail=(result.stderr or result.stdout or 'voix introuvable')[-500:]
-                raise RuntimeError('Téléchargement de la voix Piper impossible : '+detail)
+            try:
+                from piper.download_voices import download_voice
+                download_voice(VOICE_NAME,self.data)
+            except Exception as exc:
+                raise RuntimeError('Téléchargement de la voix Piper impossible : '+str(exc)) from exc
+            if not self.voice_model.exists():
+                raise RuntimeError('Téléchargement de la voix Piper terminé mais le modèle est introuvable.')
         if self.piper is None:
             status('Chargement de la voix IA locale…')
             from piper import PiperVoice
@@ -1065,7 +1086,7 @@ class Coach:
     def __init__(self,root):
         self.root=root; self.events=queue.Queue(); self.stop_event=threading.Event(); self.voice_stop=threading.Event()
         self.worker=None; self.client=None; self.session_id=0; self.updating=False; self.restart_required=False
-        self.voice_busy=False; self.voice=VoiceEngine(APP_DIR); self.history=[]; self.hotkey_listener=None
+        self.voice_busy=False; self.voice=VoiceEngine(MODEL_DIR); self.history=[]; self.hotkey_listener=None
         try:self.saved_settings=updater.read_json(SETTINGS_FILE,{}) or {}
         except Exception:self.saved_settings={}
 
@@ -1110,7 +1131,7 @@ class Coach:
             tk.Label(parent,text='Module PC absent. Relance Acolyte après la mise à jour.',bg=COLORS['bg'],fg=COLORS['text']).pack(pady=30)
             return
         if ctk is None or psutil is None:
-            tk.Label(parent,text='Interface Performance incomplète : lance Lancer.bat pour installer customtkinter et psutil.',bg=COLORS['bg'],fg=COLORS['warning']).pack(pady=30)
+            tk.Label(parent,text='Interface Performance incomplète : dépendances runtime absentes.',bg=COLORS['bg'],fg=COLORS['warning']).pack(pady=30)
             return
         self.pc_ui=PCPremiumUI(parent,APP_DIR)
 
@@ -1408,16 +1429,49 @@ class Coach:
         if getattr(self,"pc_busy",False):
             messagebox.showinfo("Mise à jour","Attends la fin de l’action PC avant de mettre à jour.");return
         if self.updating or self.voice_busy:return
-        if self.worker and self.worker.is_alive():messagebox.showinfo('Mise à jour','Arrête d’abord l’analyse automatique.'); return
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo('Mise à jour','Arrête d’abord l’analyse automatique.'); return
         config=updater.read_json(UPDATE_CONFIG_FILE,{}) or {'repo':DEFAULT_REPO,'branch':'main'}
         self.updating=True; self.update_button.state(['disabled']); self.status.set('Recherche d’une mise à jour…'); sid=self.session_id
+
         def work():
             try:
-                change=updater.plan(APP_DIR,config['repo'],config.get('branch','main'))
-                if change is None:self.emit(sid,'update_current'); return
-                updater.apply(APP_DIR,change); self.emit(sid,'update_ok',change['version'])
-            except Exception as e:self.emit(sid,'update_error',str(e))
+                if FROZEN:
+                    change=updater.plan_exe(config['repo'],VERSION)
+                    if change is None:
+                        self.emit(sid,'update_current');return
+                    result=updater.install_exe_release(change,APP_DIR,current_exe=sys.executable)
+                    self.emit(sid,'update_exe_restart',result['version'])
+                    return
+
+                # Mode source historique : on garde une dernière voie de migration.
+                source_change=updater.plan(BUNDLE_DIR,config['repo'],config.get('branch','main'))
+                if source_change is not None:
+                    updater.apply(BUNDLE_DIR,source_change)
+                    self.emit(sid,'update_ok',source_change['version'])
+                    return
+
+                # Si le code source est déjà à jour, bascule vers le vrai Acolyte.exe.
+                exe_change=updater.plan_exe(config['repo'],VERSION,allow_equal=True)
+                if exe_change is None:
+                    self.emit(sid,'update_current');return
+                result=updater.install_exe_release(exe_change,BUNDLE_DIR,current_exe=None)
+                self.emit(sid,'update_exe_transition',result['version'])
+            except Exception as e:
+                self.emit(sid,'update_error',str(e))
         threading.Thread(target=work,daemon=True).start()
+
+    def _close_for_exe_update(self):
+        try:self.save_preferences()
+        except Exception:pass
+        self.stop_event.set();self.voice_stop.set()
+        if self.hotkey_listener:
+            try:self.hotkey_listener.stop()
+            except Exception:pass
+        try:sd.stop()
+        except Exception:pass
+        try:self.root.destroy()
+        except Exception:pass
 
     def draw_audio(self,rms,peak,bands):
         level=min(1.0,max(0.0,rms*12.0)); active=int(round(level*20))
@@ -1485,7 +1539,21 @@ class Coach:
                 elif kind.startswith('update_'):
                     self.updating=False
                     if kind=='update_ok':
-                        self.restart_required=True; self.status.set('Version '+data[0]+' installée.'); messagebox.showinfo('Mise à jour','Version '+data[0]+' installée. Relance Acolyte Fortnite.')
+                        self.restart_required=True
+                        self.status.set('Version '+data[0]+' installée.')
+                        messagebox.showinfo(
+                            'Mise à jour',
+                            'Version '+data[0]+' installée.\n\nRelance Acolyte puis clique une seconde fois sur « Mettre à jour » pour terminer le passage vers Acolyte.exe.'
+                            if not FROZEN else
+                            'Version '+data[0]+' installée. Relance Acolyte.'
+                        )
+                    elif kind=='update_exe_transition':
+                        self.status.set('Acolyte.exe '+data[0]+' installé.')
+                        messagebox.showinfo('Acolyte.exe','Acolyte.exe '+data[0]+' est installé.\n\nLe nouveau raccourci Bureau est prêt. Cette ancienne version va se fermer.')
+                        self.root.after(250,self._close_for_exe_update)
+                    elif kind=='update_exe_restart':
+                        self.status.set('Acolyte.exe '+data[0]+' téléchargé. Redémarrage…')
+                        self.root.after(250,self._close_for_exe_update)
                     else:
                         self.update_button.state(['!disabled']); self.status.set('Déjà à jour.' if kind=='update_current' else 'Échec : '+data[0])
         except queue.Empty:pass
