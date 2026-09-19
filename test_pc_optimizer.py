@@ -442,4 +442,140 @@ class PersistenceAndMemoryTests(unittest.TestCase):
             self.assertEqual(rows[0]['name'],'Rocket League')
             self.assertEqual(rows[0]['launcher'],'Steam')
 
+
+class Acolyte25Tests(unittest.TestCase):
+    def test_benchmark_pair_detects_regression(self):
+        before={
+            'avg_fps':400,'one_percent_low':300,'point_one_percent_low':220,
+            'duration_seconds':60,'stutters_33ms':1,'avg_frametime_ms':2.5
+        }
+        after={
+            'avg_fps':360,'one_percent_low':250,'point_one_percent_low':160,
+            'duration_seconds':60,'stutters_33ms':8,'avg_frametime_ms':2.8
+        }
+        result=pc.compare_benchmark_pair(before,after)
+        self.assertTrue(result['regression'])
+        self.assertFalse(result['improvement'])
+        self.assertEqual(result['verdict'],'régression mesurée')
+
+    def test_benchmark_pair_detects_improvement(self):
+        before={
+            'avg_fps':300,'one_percent_low':180,'point_one_percent_low':120,
+            'duration_seconds':60,'stutters_33ms':6,'avg_frametime_ms':3.3
+        }
+        after={
+            'avg_fps':330,'one_percent_low':220,'point_one_percent_low':160,
+            'duration_seconds':60,'stutters_33ms':2,'avg_frametime_ms':3.0
+        }
+        result=pc.compare_benchmark_pair(before,after)
+        self.assertTrue(result['improvement'])
+        self.assertFalse(result['regression'])
+        self.assertEqual(result['verdict'],'amélioration mesurée')
+
+    def test_auto_rollback_setting_roundtrip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            policy=Path(folder)/'benchmark-policy.json'
+            with patch.object(pc,'BENCH_POLICY_FILE',policy):
+                self.assertFalse(pc.auto_rollback_enabled())
+                pc.set_auto_rollback(True)
+                self.assertTrue(pc.auto_rollback_enabled())
+                pc.set_auto_rollback(False)
+                self.assertFalse(pc.auto_rollback_enabled())
+
+    def test_auto_game_profile_setting_roundtrip(self):
+        game={'name':'Rocket League','launcher':'Steam','path':r'C:\Games\RL','exe':r'C:\Games\RL\RocketLeague.exe','profile':'generic'}
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'auto.json'
+            with patch.object(pc,'AUTO_PROFILE_FILE',target):
+                self.assertFalse(pc.auto_game_profile_enabled(game))
+                pc.set_auto_game_profile(game,True)
+                self.assertTrue(pc.auto_game_profile_enabled(game))
+                pc.set_auto_game_profile(game,False)
+                self.assertFalse(pc.auto_game_profile_enabled(game))
+
+    def test_audit_history_can_restore_one_setting_safely(self):
+        class FakeBackend:
+            identity={'machine':'test','sid':'test'}
+            def __init__(self):self.values={}
+            def read(self,spec):return self.values.get(repr(spec),{'exists':False})
+            def write(self,spec,value):self.values[repr(spec)]=value
+
+        with tempfile.TemporaryDirectory() as local, tempfile.TemporaryDirectory() as root:
+            audit=Path(local)/'audit.json'
+            backend=FakeBackend()
+            spec={'kind':'registry','id':'game_auto'}
+            target={'exists':True,'type':4,'value':1}
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}),patch.object(pc,'AUDIT_LOG_FILE',audit):
+                pc._apply_changes(root,[(spec,target)],backend)
+                rows=pc.optimizer_history(10)
+                event=next(x for x in rows if x.get('kind')=='setting_change')
+                self.assertEqual(backend.read(spec),target)
+                result=pc.restore_history_entry(root,event['id'],backend)
+                self.assertTrue(result['restored'])
+                self.assertEqual(backend.read(spec),{'exists':False})
+
+    def test_individual_restore_refuses_external_change(self):
+        class FakeBackend:
+            identity={'machine':'test','sid':'test'}
+            def __init__(self):self.values={}
+            def read(self,spec):return self.values.get(repr(spec),{'exists':False})
+            def write(self,spec,value):self.values[repr(spec)]=value
+
+        with tempfile.TemporaryDirectory() as local, tempfile.TemporaryDirectory() as root:
+            audit=Path(local)/'audit.json'
+            backend=FakeBackend()
+            spec={'kind':'registry','id':'game_auto'}
+            target={'exists':True,'type':4,'value':1}
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}),patch.object(pc,'AUDIT_LOG_FILE',audit):
+                pc._apply_changes(root,[(spec,target)],backend)
+                event=next(x for x in pc.optimizer_history(10) if x.get('kind')=='setting_change')
+                backend.values[repr(spec)]={'exists':True,'type':4,'value':99}
+                with self.assertRaisesRegex(RuntimeError,'changé'):
+                    pc.restore_history_entry(root,event['id'],backend)
+                self.assertEqual(backend.read(spec),{'exists':True,'type':4,'value':99})
+
+    def test_score_explanation_exposes_point_losses(self):
+        scan={
+            'score':82,'health_score':90,'gaming_score':75,
+            'score_breakdown':{
+                'Sécurité Windows':25,'Performances gaming':26,'Stockage / entretien':20,
+                'Démarrage':7,'Réseau':10,'État Windows':5
+            },
+            'gaming_breakdown':{
+                'Windows gaming':25,'Profil Fortnite':35,'RAM / BIOS':15,'Benchmark réel':0
+            },
+            'recommendations':[{'title':'Benchmark Fortnite manquant','detail':'Mesure requise.'}]
+        }
+        text=pc.score_explanation(scan)
+        self.assertIn('Démarrage: 7/10 (-3)',text)
+        self.assertIn('Benchmark réel: 0/20 (-20)',text)
+        self.assertIn('Benchmark Fortnite manquant',text)
+
+    def test_generic_profile_restore_only_reverts_owned_gpu_value(self):
+        class FakeBackend:
+            def __init__(self):self.values={}
+            def read(self,spec):return self.values.get(repr(spec),{'exists':False})
+            def write(self,spec,value):self.values[repr(spec)]=value
+
+        game={'name':'Rocket League','launcher':'Steam','path':r'C:\Games\RL','exe':r'C:\Games\RL\RocketLeague.exe'}
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder)
+            profile_dir=base/'profiles';profile_dir.mkdir()
+            state_file=profile_dir/('generic-'+pc._safe_game_key(game)+'.json')
+            spec={'kind':'registry','id':'game_gpu','name':game['exe']}
+            original={'exists':False}
+            target={'exists':True,'type':1,'value':'GpuPreference=2;'}
+            pc._write_json_file(state_file,{
+                'applied':True,'game':game['name'],'exe':game['exe'],
+                'gpu_original':original,'gpu_target':target
+            })
+            fake=FakeBackend();fake.values[repr(spec)]=target
+            with patch.object(pc,'GAME_PROFILE_DIR',profile_dir), \
+                 patch.object(pc,'WindowsSettings',return_value=fake), \
+                 patch.object(pc,'AUDIT_LOG_FILE',base/'audit.json'):
+                result=pc.restore_generic_game_profile(game)
+            self.assertTrue(result['restored'])
+            self.assertEqual(fake.read(spec),original)
+
+
 if __name__=='__main__':unittest.main()
