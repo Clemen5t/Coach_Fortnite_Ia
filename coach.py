@@ -361,6 +361,7 @@ class PCPremiumUI:
         # Les widgets d'état appartiennent à la page courante : ne jamais garder
         # de référence Tk vers un widget détruit après navigation.
         self.feature_state_labels.clear()
+        self.monitor_value_labels.clear()
         for child in self.content.winfo_children():child.destroy()
 
     def show(self,key):
