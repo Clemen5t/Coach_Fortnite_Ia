@@ -3518,6 +3518,32 @@ def full_scan():
     return scan
 
 
+# Journalise aussi les profils qui modifient des fichiers de jeu ou une préférence GPU.
+_legacy_apply_fortnite_profile_v25=apply_fortnite_profile
+def apply_fortnite_profile(root):
+    result=_legacy_apply_fortnite_profile_v25(root)
+    _audit_append('profile_change','Profil Fortnite compétitif appliqué',
+                  metadata={'game':'Fortnite','backup':result.get('backup'),'changes':result.get('changes')})
+    return result
+
+_legacy_restore_fortnite_profile_v25=restore_fortnite_profile
+def restore_fortnite_profile(root):
+    result=_legacy_restore_fortnite_profile_v25(root)
+    if result.get('restored'):
+        _audit_append('profile_change','Profil Fortnite restauré',
+                      metadata={'game':'Fortnite','preserved_current':result.get('preserved_current'),
+                                'skipped_registry':result.get('skipped_registry')})
+    return result
+
+_legacy_apply_generic_game_profile_v25=apply_generic_game_profile
+def apply_generic_game_profile(root,game):
+    result=_legacy_apply_generic_game_profile_v25(root,game)
+    _audit_append('profile_change','Profil jeu appliqué : '+str((game or {}).get('name') or 'Jeu'),
+                  metadata={'game':(game or {}).get('name'),'changes':result.get('changes')})
+    return result
+
+
+
 def start_live_game_capture(process_name=FORTNITE_PROCESS):
     """Démarre une capture PresentMon continue pour l'overlay.
     La capture est opt-in et s'arrête avec le jeu ou à la fermeture de l'overlay.
