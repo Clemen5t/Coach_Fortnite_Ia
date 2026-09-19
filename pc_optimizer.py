@@ -861,12 +861,16 @@ def settings_snapshot(backend=None):
         'ads':{'kind':'registry','id':'ads'},
         'suggestions':{'kind':'registry','id':'suggestions'},
         'suggestions_2':{'kind':'registry','id':'suggestions_2'},
+        'hags':{'kind':'registry','id':'hags'},
+        'fast_startup':{'kind':'registry','id':'fast_startup'},
     }
     for key,spec in mapping.items():
         try:out[key]=backend.read(spec)
         except Exception as exc:out[key]={'error':str(exc)}
     try:out['power_plan']=backend.read({'kind':'power'})
     except Exception as exc:out['power_plan']='Erreur: '+str(exc)
+    try:out['feature_states']=option_states(backend)
+    except Exception as exc:out['feature_states_error']=str(exc);out['feature_states']={}
     return out
 
 def windows_health_snapshot():
@@ -1052,11 +1056,15 @@ def score_scan(scan):
 
 def recommended_options(scan):
     settings=scan.get('settings') or {}
+    states=settings.get('feature_states') or {}
     options=[]
-    if not _reg_is(settings.get('game_auto'),1):options.append('game')
-    if _reg_is(settings.get('capture'),1) or _reg_is(settings.get('dvr'),1):options.append('captures')
-    if str(settings.get('power_plan','')).lower()!=BALANCED:options.append('balanced')
-    return options
+    for key in ('game','captures','balanced','net_power'):
+        if states.get(key) is False:options.append(key)
+    # AMD profile is proposé uniquement si une Radeon RX est détectée et s'il n'est pas déjà actif.
+    gpu=str((scan.get('system') or {}).get('gpu','')).lower()
+    if 'radeon rx' in gpu and states.get('amd_gpu') is False:
+        options.append('amd_gpu')
+    return list(dict.fromkeys(options))
 
 def apply_selected(options, root):
     return optimize(root, options)
