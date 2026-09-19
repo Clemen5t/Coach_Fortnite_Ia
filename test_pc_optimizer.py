@@ -252,6 +252,47 @@ class GameProfileTests(unittest.TestCase):
         self.assertEqual(values[('/Script/FortniteGame.FortGameUserSettings','FrameRateLimit')],'0.000000')
         self.assertEqual(values[('ScalabilityGroups','sg.ShadowQuality')],'0')
 
+    def test_apply_fortnite_profile_creates_backup_and_finishes(self):
+        class FakeBackend:
+            def __init__(self):self.values={}
+            def read(self,spec):return self.values.get(repr(spec),{'exists':False})
+            def write(self,spec,value):self.values[repr(spec)]=value
+
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder)
+            cfg=base/'GameUserSettings.ini'
+            cfg.write_text(
+                '[/Script/FortniteGame.FortGameUserSettings]\n'
+                'bUseVSync=True\n'
+                'bMotionBlur=True\n'
+                'bUseDynamicResolution=True\n'
+                'FrameRateLimit=240.000000\n\n'
+                '[ScalabilityGroups]\n'
+                'sg.ShadowQuality=3\n',
+                encoding='utf-8'
+            )
+            profile_dir=base/'profile'
+            profile_file=profile_dir/'fortnite-profile.json'
+            exe=r'C:\\Games\\Fortnite\\FortniteClient-Win64-Shipping.exe'
+            fake=FakeBackend()
+            with patch.object(pc.os,'name','nt'), \
+                 patch.object(pc,'GAME_PROFILE_DIR',profile_dir), \
+                 patch.object(pc,'FORTNITE_PROFILE_FILE',profile_file), \
+                 patch.object(pc,'game_process_running',return_value={'running':False}), \
+                 patch.object(pc,'_fortnite_executable',return_value=exe), \
+                 patch.object(pc,'_fortnite_config_path',return_value=cfg), \
+                 patch.object(pc,'WindowsSettings',return_value=fake), \
+                 patch.object(pc,'fortnite_profile_status',return_value={'score':80,'profile_applied':True}):
+                result=pc.apply_fortnite_profile(base)
+
+            backup=profile_dir/'Fortnite-GameUserSettings.backup.ini'
+            self.assertTrue(backup.exists())
+            self.assertTrue(profile_file.exists())
+            self.assertIn('Profil Fortnite compétitif appliqué',result['message'])
+            text=cfg.read_text(encoding='utf-8')
+            self.assertIn('bUseVSync=False',text)
+            self.assertIn('sg.ShadowQuality=0',text)
+
     def test_gaming_score_rewards_profile_and_real_benchmark(self):
         scan={
             'settings':{'feature_states':{'game':True,'captures':True,'balanced':True}},
