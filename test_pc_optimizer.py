@@ -356,4 +356,49 @@ class CompetitiveResearchTests(unittest.TestCase):
         self.assertIn('hypr_rx',keys)
         self.assertTrue(any('HPET' in x for x in audit['excluded']))
 
+
+class PersistenceAndMemoryTests(unittest.TestCase):
+    def test_desired_features_survive_install_path_change(self):
+        with tempfile.TemporaryDirectory() as local, tempfile.TemporaryDirectory() as root1, tempfile.TemporaryDirectory() as root2:
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}):
+                pc.set_feature_desired(root1,'ads',True)
+                pc.set_feature_desired(root1,'mouse_accel_off',True)
+                state=pc.desired_features(root2)
+                self.assertTrue(state.get('ads'))
+                self.assertTrue(state.get('mouse_accel_off'))
+                self.assertEqual(pc.optimizer_desired_path(root1),pc.optimizer_desired_path(root2))
+
+    def test_corsair_part_number_infers_5200_from_current_4800(self):
+        target,confidence,profile=pc._memory_target_from_part('CMH5X16G1B52C40A2',4800)
+        self.assertEqual(target,5200)
+        self.assertEqual(confidence,'part_number')
+        data={'ram':[{
+            'PartNumber':'CMH5X16G1B52C40A2','Manufacturer':'Unknown',
+            'Capacity':17179869184,'Speed':4800,'ConfiguredClockSpeed':4800
+        },{
+            'PartNumber':'CMH5X16G1B52C40A2','Manufacturer':'Unknown',
+            'Capacity':17179869184,'Speed':4800,'ConfiguredClockSpeed':4800
+        }]}
+        result=pc.memory_profile_analysis(data)
+        self.assertEqual(result['current_mt'],4800)
+        self.assertEqual(result['target_mt'],5200)
+        self.assertTrue(result['profile_likely_off'])
+        self.assertFalse(result['can_apply_from_windows'])
+
+    def test_steam_manifest_detection_lists_installed_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            steam=Path(folder)/'Steam'
+            steamapps=steam/'steamapps'
+            game=steamapps/'common'/'Rocket League'
+            game.mkdir(parents=True)
+            (steamapps/'appmanifest_252950.acf').write_text(
+                '"AppState"\\n{\\n"appid" "252950"\\n"name" "Rocket League"\\n"installdir" "Rocket League"\\n}',
+                encoding='utf-8'
+            )
+            with patch.object(pc,'_steam_root',return_value=steam):
+                rows=pc._detect_steam_games()
+            self.assertEqual(len(rows),1)
+            self.assertEqual(rows[0]['name'],'Rocket League')
+            self.assertEqual(rows[0]['launcher'],'Steam')
+
 if __name__=='__main__':unittest.main()
