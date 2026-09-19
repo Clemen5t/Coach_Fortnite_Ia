@@ -142,6 +142,7 @@ BALANCED = '381b4222-f694-41f0-9685-ff5bb260df2e'
 USB_SUB = '2a737441-1930-4402-8d77-b2bebba308a3'
 USB_SETTING = '48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
 JOURNAL_NAME = 'pc-optimizer-state-v2.json'
+DESIRED_NAME = 'pc-desired-features.json'
 _MUTATION_LOCK = threading.Lock()
 OPTIONS = {
     'game': ('Mode Jeu Windows', 'Active les préférences gaming Windows du compte courant.'),
@@ -352,6 +353,28 @@ def _save_state(path, data):
     finally:
         if os.path.exists(temp):os.unlink(temp)
 
+
+def desired_features(root):
+    path=Path(root)/DESIRED_NAME
+    try:
+        data=json.loads(path.read_text(encoding='utf-8'))
+        return {k:bool(v) for k,v in data.items() if k in OPTIONS}
+    except (FileNotFoundError,ValueError,OSError):return {}
+
+def set_feature_desired(root, option, enabled):
+    if option not in OPTIONS:raise ValueError('Fonctionnalité inconnue.')
+    data=desired_features(root)
+    if enabled:data[option]=True
+    else:data.pop(option,None)
+    path=Path(root)/DESIRED_NAME
+    temp=path.with_suffix('.tmp')
+    temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+    os.replace(temp,path)
+    return data
+
+def desired_drift(root, states):
+    wanted=desired_features(root)
+    return [key for key in wanted if states.get(key) is False]
 
 def _load_state(root, backend):
     path = Path(root)/JOURNAL_NAME
@@ -600,12 +623,14 @@ def optimize(root, options=None, backend=None):
         merged[key]=(spec,value)
     changes=[merged[k] for k in order]
     result=_apply_changes(root,changes,backend)
+    for option in options:
+        set_feature_desired(root,option,True)
     if not result['changed']:
-        return 'Les réglages sélectionnés ont déjà les valeurs demandées. Aucun changement.'
+        return 'Les réglages sélectionnés ont déjà les valeurs demandées. Leur état est marqué comme persistant.'
     return (
         f"{result['changed']} réglage(s) modifié(s) et vérifié(s).\n"
         f"Sauvegarde initiale conservée : {result['backup']}\n"
-        "Les réglages sont relus depuis Windows au prochain scan, donc l’état reste cohérent après redémarrage.\n"
+        "Les réglages sont relus depuis Windows et réappliqués par Acolyte s’ils dérivent après un redémarrage.\n"
         "Aucun gain de FPS n’est garanti : compare avec le benchmark avant/après."
     )
 
@@ -636,6 +661,7 @@ def restore_feature(root, option, backend=None):
         if not state['entries'] and path.exists():
             archive=Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
             os.replace(path,archive)
+        set_feature_desired(root,option,False)
         return f'{restored} réglage(s) restauré(s) pour {OPTIONS[option][0]}.'
 
 def restore(root, backend=None):
@@ -653,7 +679,11 @@ def restore(root, backend=None):
         if errors:raise RuntimeError('Restauration partielle ; sauvegarde conservée pour réessayer : '+'; '.join(errors))
         archive = Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
         os.replace(Path(root)/JOURNAL_NAME, archive)
-        return 'Tous les réglages suivis par cette version ont été restaurés et vérifiés.\nLes désinstallations et les changements manuels dans Windows/AMD/BIOS ne sont pas inclus.'
+        desired=Path(root)/DESIRED_NAME
+        if desired.exists():
+            try:desired.unlink()
+            except OSError:pass
+        return 'Tous les réglages suivis par cette version ont été restaurés et vérifiés.\nLa persistance automatique des optimisations a également été effacée.\nLes désinstallations et les changements manuels dans Windows/AMD/BIOS ne sont pas inclus.'
 
 
 def startup_items():
