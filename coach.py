@@ -16,8 +16,22 @@ except ImportError:
 import json
 
 APP_DIR=Path(__file__).resolve().parent
+DATA_DIR=Path(os.environ.get('LOCALAPPDATA') or (Path.home()/'AppData'/'Local'))/'AcolyteFortnite'
+DATA_DIR.mkdir(parents=True,exist_ok=True)
+SETTINGS_FILE=DATA_DIR/'settings.json'
+UPDATE_CONFIG_FILE=DATA_DIR/'update-config.json'
 DEFAULT_REPO='Clemen5t/Coach_Fortnite_Ia'
 VERSION=(APP_DIR/'VERSION').read_text().strip()
+
+def _migrate_user_file(name,target):
+    old=APP_DIR/name
+    if target.exists() or not old.exists():return
+    try:
+        target.write_bytes(old.read_bytes())
+    except OSError:pass
+
+_migrate_user_file('settings.json',SETTINGS_FILE)
+_migrate_user_file('update-config.json',UPDATE_CONFIG_FILE)
 
 import mss
 import numpy as np
@@ -1057,7 +1071,7 @@ class Coach:
         self.root=root; self.events=queue.Queue(); self.stop_event=threading.Event(); self.voice_stop=threading.Event()
         self.worker=None; self.client=None; self.session_id=0; self.updating=False; self.restart_required=False
         self.voice_busy=False; self.voice=VoiceEngine(APP_DIR); self.history=[]; self.hotkey_listener=None
-        try:self.saved_settings=updater.read_json(APP_DIR/'settings.json',{}) or {}
+        try:self.saved_settings=updater.read_json(SETTINGS_FILE,{}) or {}
         except Exception:self.saved_settings={}
 
         self.build_theme()
@@ -1386,13 +1400,13 @@ class Coach:
         finally:self.client=None; self.emit(sid,'finished')
 
     def save_preferences(self):
-        try:updater.write_json(APP_DIR/'settings.json',{k:v.get() for k,v in self.preferences.items()})
+        try:updater.write_json(SETTINGS_FILE,{k:v.get() for k,v in self.preferences.items()})
         except Exception:pass
 
     def configure_repo(self):
         repo=simpledialog.askstring('Dépôt GitHub','Lien du dépôt PUBLIC :',initialvalue=DEFAULT_REPO,parent=self.root)
         if repo:
-            try:updater.write_json(APP_DIR/'update-config.json',{'repo':updater.normalize_repo(repo),'branch':'main'}); self.status.set('Dépôt GitHub configuré.')
+            try:updater.write_json(UPDATE_CONFIG_FILE,{'repo':updater.normalize_repo(repo),'branch':'main'}); self.status.set('Dépôt GitHub configuré.')
             except Exception as e:messagebox.showerror('GitHub',str(e))
 
     def update_app(self):
@@ -1400,7 +1414,7 @@ class Coach:
             messagebox.showinfo("Mise à jour","Attends la fin de l’action PC avant de mettre à jour.");return
         if self.updating or self.voice_busy:return
         if self.worker and self.worker.is_alive():messagebox.showinfo('Mise à jour','Arrête d’abord l’analyse automatique.'); return
-        config=updater.read_json(APP_DIR/'update-config.json',{}) or {'repo':DEFAULT_REPO,'branch':'main'}
+        config=updater.read_json(UPDATE_CONFIG_FILE,{}) or {'repo':DEFAULT_REPO,'branch':'main'}
         self.updating=True; self.update_button.state(['disabled']); self.status.set('Recherche d’une mise à jour…'); sid=self.session_id
         def work():
             try:
