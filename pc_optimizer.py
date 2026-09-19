@@ -5,10 +5,15 @@ from pathlib import Path
 
 BACKUP_NAME='pc-optimizer-backup.json'
 
-def optimizer_data_dir(root):
-    """État de l'optimiseur dans LocalAppData, indépendant des ACL du dossier téléchargé."""
-    root=Path(root).resolve()
+def optimizer_base_dir():
     base=Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir())/'AcolyteFortnite'/'Optimizer'
+    base.mkdir(parents=True,exist_ok=True)
+    return base
+
+def optimizer_data_dir(root):
+    """Journal technique par installation ; les préférences utilisateur sont globales."""
+    root=Path(root or Path(sys.executable).resolve().parent).resolve()
+    base=optimizer_base_dir()
     key=hashlib.sha256(str(root).casefold().encode('utf-8')).hexdigest()[:16]
     folder=base/key
     folder.mkdir(parents=True,exist_ok=True)
@@ -17,8 +22,9 @@ def optimizer_data_dir(root):
 def optimizer_state_path(root):
     return optimizer_data_dir(root)/JOURNAL_NAME
 
-def optimizer_desired_path(root):
-    return optimizer_data_dir(root)/DESIRED_NAME
+def optimizer_desired_path(root=None):
+    # Global : ne change plus lors d'une mise à jour, d'un nouvel EXE ou d'un déplacement de l'app.
+    return optimizer_base_dir()/DESIRED_NAME
 
 def optimizer_lock_path(root):
     return optimizer_data_dir(root)/'pc-optimizer.lock'
@@ -378,8 +384,11 @@ $props=@(Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyCont
             return hive,key,name
         if spec.get('id') == 'startup' and isinstance(spec.get('name'), str) and spec['name'] and '\x00' not in spec['name']:
             return self.reg.HKEY_CURRENT_USER,RUN_KEY,spec['name']
-        if spec.get('id') == 'fortnite_gpu' and isinstance(spec.get('name'),str) and spec['name'] and '\x00' not in spec['name']:
-            return self.reg.HKEY_CURRENT_USER,r'Software\Microsoft\DirectX\UserGpuPreferences',spec['name']
+        if spec.get('id') in ('fortnite_gpu','game_gpu') and isinstance(spec.get('name'),str) and spec['name'] and '\x00' not in spec['name']:
+            name=str(spec['name'])
+            if not name.lower().endswith('.exe') or not Path(name).is_absolute():
+                raise ValueError('Exécutable de jeu invalide.')
+            return self.reg.HKEY_CURRENT_USER,r'Software\Microsoft\DirectX\UserGpuPreferences',name
         if spec.get('id') in ('nagle_tcp','nagle_ack'):
             path=str(spec.get('path') or '')
             prefix='SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\'
@@ -519,8 +528,24 @@ def _save_state(path, data):
         if os.path.exists(temp):os.unlink(temp)
 
 
-def desired_features(root):
-    path=_migrate_optimizer_file(root,DESIRED_NAME)
+def desired_features(root=None):
+    path=optimizer_desired_path(root)
+    if not path.exists():
+        # Migration best-effort de toutes les anciennes installations Acolyte.
+        merged={}
+        candidates=[]
+        if root is not None:
+            candidates.extend([Path(root)/DESIRED_NAME,optimizer_data_dir(root)/DESIRED_NAME])
+        try:candidates.extend(optimizer_base_dir().glob('*/'+DESIRED_NAME))
+        except OSError:pass
+        for old in candidates:
+            try:
+                data=json.loads(Path(old).read_text(encoding='utf-8'))
+                for k,v in data.items():
+                    if k in OPTIONS and bool(v):merged[k]=True
+            except (OSError,ValueError,TypeError):pass
+        if merged:
+            _save_state(path,merged)
     try:
         data=json.loads(path.read_text(encoding='utf-8'))
         return {k:bool(v) for k,v in data.items() if k in OPTIONS}
@@ -1407,7 +1432,50 @@ if($null -eq $nic){[ordered]@{status='Aucune interface réseau active'}}else{
  }}""")
     return 'Diagnostic réseau en lecture seule. Acolyte ne force aucun tweak réseau sans mesure.\n\n'+json.dumps(data,ensure_ascii=False,indent=2)
 
-def detected_games():
+def _steam_root():
+    candidates=[
+        Path(os.environ.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))/'Steam',
+        Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Steam'
+    ]
+    if os.name=='nt':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Valve\Steam') as h:
+                value,_=winreg.QueryValueEx(h,'SteamPath')
+                if value:candidates.insert(0,Path(value))
+        except Exception:pass
+    return next((p for p in candidates if p.exists()),None)
+
+def _steam_libraries(root):
+    if not root:return []
+    libs=[root]
+    path=root/'steamapps'/'libraryfolders.vdf'
+    try:text=path.read_text(encoding='utf-8',errors='replace')
+    except OSError:return libs
+    for value in re.findall(r'"path"\s*"([^"]+)"',text,re.I):
+        p=Path(value.replace('\\\\','\\'))
+        if p.exists() and p not in libs:libs.append(p)
+    return libs
+
+def _detect_steam_games():
+    root=_steam_root();games=[]
+    for lib in _steam_libraries(root):
+        steamapps=lib/'steamapps'
+        if not steamapps.exists():continue
+        for manifest in steamapps.glob('appmanifest_*.acf'):
+            try:
+                text=manifest.read_text(encoding='utf-8',errors='replace')
+                def val(key):
+                    m=re.search(r'"'+re.escape(key)+r'"\s*"([^"]*)"',text,re.I)
+                    return m.group(1).strip() if m else ''
+                name=val('name');installdir=val('installdir');appid=val('appid')
+                path=steamapps/'common'/installdir
+                if name and installdir and path.exists():
+                    games.append({'launcher':'Steam','name':name,'path':str(path),'app_id':appid})
+            except Exception:pass
+    return games
+
+def _detect_epic_games():
     games=[]
     manifests=Path(os.environ.get('ProgramData',r'C:\ProgramData'))/'Epic'/'EpicGamesLauncher'/'Data'/'Manifests'
     if manifests.exists():
@@ -1416,19 +1484,109 @@ def detected_games():
                 data=json.loads(path.read_text(encoding='utf-8'))
                 name=str(data.get('DisplayName') or data.get('AppName') or '').strip()
                 loc=str(data.get('InstallLocation') or '').strip()
-                if name and loc:games.append({'launcher':'Epic Games','name':name,'path':loc})
+                if name and loc and Path(loc).exists():
+                    games.append({'launcher':'Epic Games','name':name,'path':loc,'app_id':str(data.get('AppName') or '')})
             except Exception:pass
-    # Jeux connus présents sans dépendre d'un launcher précis.
-    candidates=[
-        ('Fortnite',Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Epic Games'/'Fortnite'),
-        ('Fortnite',Path('C:/Program Files/Epic Games/Fortnite')),
-    ]
-    known={(g['name'].lower(),g['path'].lower()) for g in games}
-    for name,path in candidates:
-        if path.exists() and (name.lower(),str(path).lower()) not in known:
-            games.append({'launcher':'Détection locale','name':name,'path':str(path)})
     return games
 
+def _detect_riot_games():
+    games=[]
+    candidates=[
+        ('VALORANT',Path(r'C:\Riot Games\VALORANT')),
+        ('League of Legends',Path(r'C:\Riot Games\League of Legends')),
+    ]
+    for name,path in candidates:
+        if path.exists():games.append({'launcher':'Riot Games','name':name,'path':str(path)})
+    return games
+
+def _game_executable(game):
+    root=Path(str(game.get('path') or ''))
+    if not root.exists():return None
+    name=str(game.get('name') or '').casefold()
+    preferred=[]
+    all_exe=[]
+    try:
+        for exe in root.rglob('*.exe'):
+            lower=exe.name.casefold()
+            if any(x in lower for x in ('uninstall','crashreport','reporter','launcher','easyanticheat','battleye','redistributable','setup','installer')):
+                continue
+            try:
+                if exe.stat().st_size<1_000_000:continue
+            except OSError:continue
+            all_exe.append(exe)
+            stem=exe.stem.casefold().replace('-',' ').replace('_',' ')
+            words=[x for x in re.split(r'\W+',name) if len(x)>=4]
+            score=sum(1 for w in words if w in stem)
+            if score:preferred.append((score,exe.stat().st_size,exe))
+    except OSError:pass
+    if preferred:
+        preferred.sort(key=lambda x:(x[0],x[1]),reverse=True)
+        return str(preferred[0][2])
+    if all_exe:
+        all_exe.sort(key=lambda x:x.stat().st_size if x.exists() else 0,reverse=True)
+        return str(all_exe[0])
+    return None
+
+def detected_games():
+    games=_detect_epic_games()+_detect_steam_games()+_detect_riot_games()
+    # Fortnite fallback si le manifeste Epic manque.
+    candidates=[
+        ('Fortnite',Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'Epic Games'/'Fortnite'),
+        ('Fortnite',Path(r'C:\Program Files\Epic Games\Fortnite')),
+    ]
+    for name,path in candidates:
+        if path.exists():games.append({'launcher':'Détection locale','name':name,'path':str(path)})
+    unique={}
+    for game in games:
+        key=(str(game.get('name') or '').casefold(),str(game.get('path') or '').casefold())
+        if key in unique:continue
+        row=dict(game)
+        row['exe']=_game_executable(row)
+        row['profile']='fortnite' if str(row.get('name') or '').casefold()=='fortnite' else 'generic'
+        unique[key]=row
+    return sorted(unique.values(),key=lambda x:(str(x.get('launcher')),str(x.get('name')).casefold()))
+
+def _safe_game_key(game):
+    raw=(str(game.get('launcher') or '')+'|'+str(game.get('name') or '')+'|'+str(game.get('path') or '')).casefold()
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+
+def generic_game_profile_status(game):
+    exe=game.get('exe') or _game_executable(game)
+    state_path=GAME_PROFILE_DIR/('generic-'+_safe_game_key(game)+'.json')
+    applied=False
+    try:
+        data=json.loads(state_path.read_text(encoding='utf-8'))
+        applied=bool(data.get('applied')) and str(data.get('exe') or '').casefold()==str(exe or '').casefold()
+    except Exception:pass
+    return {'applied':applied,'exe':exe,'supported':bool(exe),'state_path':str(state_path)}
+
+def apply_generic_game_profile(root,game):
+    if os.name!='nt':raise RuntimeError('Profil jeu disponible uniquement sous Windows.')
+    game=dict(game or {})
+    if str(game.get('name') or '').casefold()=='fortnite':
+        return apply_fortnite_profile(root)
+    exe=game.get('exe') or _game_executable(game)
+    if not exe:raise RuntimeError("Acolyte n’a pas trouvé l’exécutable principal de ce jeu.")
+    backend=WindowsSettings()
+    GAME_PROFILE_DIR.mkdir(parents=True,exist_ok=True)
+    state_path=GAME_PROFILE_DIR/('generic-'+_safe_game_key(game)+'.json')
+    spec={'kind':'registry','id':'game_gpu','name':exe}
+    original=backend.read(spec)
+    target={'exists':True,'type':1,'value':'GpuPreference=2;'}
+    # Réglages Windows communs, réversibles et déjà gérés par Acolyte.
+    optimize(root,['game','captures'],backend)
+    backend.write(spec,target)
+    state={
+        'schema':1,'applied':True,'game':game.get('name'),'launcher':game.get('launcher'),
+        'path':game.get('path'),'exe':exe,'gpu_original':original,'gpu_target':target,
+        'applied_at':time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+    _save_state(state_path,state)
+    return {
+        'message':str(game.get('name') or 'Jeu')+' optimisé.',
+        'changes':['Mode Jeu Windows activé','Captures DVR en arrière-plan désactivées','GPU haute performance forcé pour cet exécutable'],
+        'game':game,'state':state
+    }
 
 # === PROFILS D'OPTIMISATION PAR JEU ===
 GAME_PROFILE_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()/'AppData'/'Local'))) / 'AcolyteFortnite' / 'GameProfiles'
@@ -1710,21 +1868,25 @@ def restore_fortnite_profile(root):
     }
 
 def bios_diagnostics():
-    data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)
-$fw='Inconnu'
-try{$fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType}catch{}
-$virt=(Get-CimInstance Win32_Processor|Select -First 1 VirtualizationFirmwareEnabled,VMMonitorModeExtensions,SecondLevelAddressTranslationExtensions)
-[ordered]@{firmware=$fw;ram=$ram;virtualization=$virt}""")
-    rows=_rows(data.get('ram') if isinstance(data,dict) else None)
-    hint=[]
-    for row in rows:
-        try:
-            rated=int(row.get('Speed') or 0);configured=int(row.get('ConfiguredClockSpeed') or 0)
-            if rated and configured and rated>configured:
-                hint.append(f"RAM {row.get('PartNumber','')}: {configured} MT/s configurés pour {rated} MT/s annoncés. Vérifie EXPO/XMP dans le BIOS.")
-        except Exception:pass
-    note='\n'.join(hint) if hint else 'La vitesse déclarée par Windows ne suffit pas à confirmer EXPO/XMP ; vérifie le BIOS pour une confirmation.'
-    return note+'\n\n'+json.dumps(data,ensure_ascii=False,indent=2)
+    data=bios_snapshot()
+    mem=data.get('memory_profile') or {}
+    lines=[
+        'Diagnostic RAM automatique',
+        f"Vitesse actuelle : {mem.get('current_mt') or '?'} MT/s",
+        f"Cible estimée : {mem.get('target_mt') or '?'} MT/s",
+        f"État : {mem.get('status','INCONNU')}",
+        '',
+    ]
+    if mem.get('profile_likely_off'):
+        lines.append("Conclusion : le profil mémoire semble désactivé. Acolyte peut confirmer ce diagnostic sans ouvrir le BIOS.")
+    else:
+        lines.append("Conclusion : aucune sous-fréquence évidente détectée par Windows.")
+    lines.extend([
+        "Acolyte ne modifie pas automatiquement fréquence/tension/timings DDR5 depuis Windows : ces paramètres sont appliqués avant le chargement de Windows.",
+        '',
+        json.dumps(data,ensure_ascii=False,indent=2)
+    ])
+    return '\n'.join(lines)
 
 def checkup():
     temp=Path(os.environ.get('TEMP',Path.home()/'AppData'/'Local'/'Temp'))
@@ -1877,21 +2039,78 @@ if($null -eq $nic){[ordered]@{status='offline'}}else{
   allow_power_off=if($pm){[string]$pm.AllowComputerToTurnOffDevice}else{$null}
  }}""")
 
-def bios_snapshot():
-    data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)
+def _memory_target_from_part(part_number,spd_speed=0):
+    """Inférence prudente du débit commercial pour quelques références DDR5.
+    Retourne (target, confidence, profile_hint). Aucune écriture firmware.
+    """
+    part=str(part_number or '').strip().upper().replace(' ','')
+    target=int(spd_speed or 0)
+    confidence='spd'
+    profile='XMP/EXPO'
+    # Corsair Vengeance : les références contiennent souvent B52/B56/Z60 etc.
+    match=re.search(r'(?:B|Z)(48|50|52|54|56|58|60|62|64|66|68|70|72)(?:C|Z)',part)
+    if not match:
+        match=re.search(r'(48|50|52|54|56|58|60|62|64|66|68|70|72)C\d{2}',part)
+    if match:
+        inferred=int(match.group(1))*100
+        if inferred>=target:
+            target=inferred;confidence='part_number'
+    if 'Z' in part[-8:]:profile='EXPO/XMP'
+    elif part.startswith(('CMH','CMK','CMP')):profile='XMP/EXPO'
+    return target,confidence,profile
+
+def memory_profile_analysis(data=None):
+    data=data or bios_snapshot(raw=True)
+    rows=_rows(data.get('ram') if isinstance(data,dict) else None)
+    modules=[];current_values=[];target_values=[]
+    for row in rows:
+        try:
+            configured=int(row.get('ConfiguredClockSpeed') or 0)
+            spd=int(row.get('Speed') or 0)
+        except (TypeError,ValueError):
+            configured=spd=0
+        target,confidence,profile=_memory_target_from_part(row.get('PartNumber'),spd)
+        current_values.append(configured)
+        target_values.append(target)
+        state='unknown'
+        if configured and target:
+            state='active_or_stock' if configured>=target-100 else 'profile_likely_off'
+        modules.append({
+            'part_number':str(row.get('PartNumber') or '').strip(),
+            'manufacturer':str(row.get('Manufacturer') or '').strip(),
+            'slot':str(row.get('DeviceLocator') or row.get('BankLabel') or '').strip(),
+            'capacity':int(row.get('Capacity') or 0),
+            'spd_mt':spd,'current_mt':configured,'target_mt':target,
+            'target_confidence':confidence,'profile_hint':profile,'state':state,
+            'configured_voltage_mv':row.get('ConfiguredVoltage')
+        })
+    current=min([x for x in current_values if x] or [0])
+    target=max([x for x in target_values if x] or [0])
+    likely_off=bool(current and target and current<target-100)
+    return {
+        'current_mt':current,'target_mt':target,
+        'profile_likely_off':likely_off,
+        'status':'PROFIL MÉMOIRE PROBABLEMENT INACTIF' if likely_off else ('VITESSE CIBLE ATTEINTE' if current and target else 'ÉTAT NON CONFIRMÉ'),
+        'modules':modules,
+        'can_apply_from_windows':False,
+        'reason':'La fréquence, la tension et les timings DDR5 sont initialisés par le firmware avant Windows. Acolyte peut les diagnostiquer et les tester, mais ne les modifie pas automatiquement depuis Windows.'
+    }
+
+def bios_snapshot(raw=False):
+    data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed,ConfiguredVoltage,MinVoltage,MaxVoltage,DeviceLocator,BankLabel,SMBIOSMemoryType)
 $fw='Inconnu'
 try{$fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType}catch{}
 $virt=Get-CimInstance Win32_Processor|Select -First 1 VirtualizationFirmwareEnabled,VMMonitorModeExtensions,SecondLevelAddressTranslationExtensions
 [ordered]@{firmware=$fw;ram=$ram;virtualization=$virt}""")
-    rows=_rows(data.get('ram') if isinstance(data,dict) else None)
-    hints=[]
-    for row in rows:
-        try:
-            rated=int(row.get('Speed') or 0);configured=int(row.get('ConfiguredClockSpeed') or 0)
-            if rated and configured and rated-configured>=200:
-                hints.append(f"RAM {str(row.get('PartNumber') or '').strip()}: {configured} MT/s configurés pour {rated} MT/s annoncés. EXPO/XMP est à vérifier dans le BIOS.")
-        except (TypeError,ValueError):pass
-    data['hints']=hints
+    if raw:return data
+    analysis=memory_profile_analysis(data)
+    data['memory_profile']=analysis
+    data['hints']=[]
+    if analysis.get('profile_likely_off'):
+        data['hints'].append(
+            f"RAM à {analysis.get('current_mt')} MT/s ; cible estimée {analysis.get('target_mt')} MT/s. "
+            "Le profil mémoire XMP/EXPO paraît inactif."
+        )
     return data
 
 def settings_snapshot(backend=None):
@@ -1915,6 +2134,8 @@ def settings_snapshot(backend=None):
     except Exception as exc:out['power_plan']='Erreur: '+str(exc)
     try:out['feature_states']=option_states(backend)
     except Exception as exc:out['feature_states_error']=str(exc);out['feature_states']={}
+    try:out['feature_desired']=desired_features()
+    except Exception:out['feature_desired']={}
     return out
 
 def windows_health_snapshot():
