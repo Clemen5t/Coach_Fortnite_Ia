@@ -250,6 +250,9 @@ class WindowsSettings:
         if kind == 'net_eee':
             name=spec['name'].replace("'","''")
             return _strict_json(f"@($x=Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyContinue|Where-Object {{$_.DisplayName -match 'Energy.Efficient|Green Ethernet|Gigabit Lite|Power Saving|Économie.*énergie'}}; $x|Select-Object RegistryKeyword,DisplayValue,ValidDisplayValues)")
+        if kind == 'tcp_baseline':
+            name=spec['name'].replace("'","''")
+            return _strict_json(f"$r=Get-NetAdapterRss -Name '{name}' -ErrorAction Stop; $t=Get-NetTCPSetting -SettingName Internet -ErrorAction Stop; [ordered]@{{rss=[bool]$r.Enabled;autotuning=[string]$t.AutoTuningLevelLocal}}")
         raise ValueError('Type de réglage invalide.')
 
     def _registry_target(self, spec):
@@ -320,6 +323,18 @@ class WindowsSettings:
                 if not keyword:continue
                 out,err,code=_ps(f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -DisplayValue '{display}' -NoRestart -ErrorAction Stop")
                 if code:raise RuntimeError(err or out or 'Modification EEE refusée.')
+        elif kind == 'tcp_baseline':
+            name=spec['name'].replace("'","''")
+            if value.get('rss'):
+                out,err,code=_ps(f"Enable-NetAdapterRss -Name '{name}' -ErrorAction Stop")
+            else:
+                out,err,code=_ps(f"Disable-NetAdapterRss -Name '{name}' -ErrorAction Stop")
+            if code:raise RuntimeError(err or out or 'Modification RSS refusée.')
+            level=str(value.get('autotuning') or 'Normal')
+            out,err,code=_ps(f"Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal {level} -ErrorAction Stop")
+            if code:
+                out,err,code=_run(['netsh.exe','int','tcp','set','global','autotuninglevel='+level.lower()])
+                if code:raise RuntimeError(err or out or 'Modification Auto-Tuning refusée.')
         else:raise ValueError('Type de réglage invalide.')
         if kind not in ('service','net_eee') and self.read(spec) != value:
             raise RuntimeError('La vérification du réglage a échoué.')
