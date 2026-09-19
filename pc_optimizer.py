@@ -2216,6 +2216,97 @@ def optimization_research_audit():
         {'name':'Custom Windows / services massivement supprimés','status':'Refusé','action':'Pas de debloat destructif','reason':'Les gains sont difficiles à attribuer et le risque de casse, sécurité ou mises à jour est élevé.'},
     ]
 
+COMPETITIVE_SAFE_OPTIONS=(
+    'game','captures','balanced','mouse_accel_off',
+    'net_power','tcp_baseline','p2p_off'
+)
+
+def gaming_research_audit(scan=None):
+    """Synthèse des optimisations retenues après validation par sources officielles et mesure locale.
+    Les réglages privés/non documentés de pilotes et les tweaks placebo restent exclus.
+    """
+    scan=scan or {}
+    system=scan.get('system') or {}
+    settings=scan.get('settings') or {}
+    states=settings.get('feature_states') or {}
+    gpu=str(system.get('gpu') or '').lower()
+    cpu=str(system.get('cpu') or '').lower()
+    cards=[]
+
+    def add(key,title,status,detail,action='none',risk='Faible',source=''):
+        cards.append({'key':key,'title':title,'status':status,'detail':detail,'action':action,'risk':risk,'source':source})
+
+    add('game_mode','Mode Jeu Windows',
+        'OK' if states.get('game') is True else 'À appliquer',
+        'Conservé dans le pack compétitif. Réglage Windows réversible.',
+        'game','Faible','Microsoft / Windows Gaming')
+    add('captures','Captures Game DVR',
+        'OK' if states.get('captures') is True else 'À appliquer',
+        'Les captures en arrière-plan sont coupées dans le profil compétitif quand elles ne sont pas utilisées.',
+        'captures','Faible','Microsoft / Windows Gaming')
+    add('balanced','Plan Équilibré Ryzen',
+        'OK' if states.get('balanced') is True else 'À appliquer',
+        'Sur Ryzen X3D, Acolyte conserve le plan Équilibré comme base stable au lieu de forcer un plan exotique.',
+        'balanced','Faible','AMD / Microsoft')
+    add('mouse','Accélération souris',
+        'OK' if states.get('mouse_accel_off') is True else 'À appliquer',
+        'Enhance Pointer Precision est désactivé pour une réponse souris plus prévisible.',
+        'mouse_accel_off','Faible','Windows')
+    add('network','Base réseau',
+        'OK' if states.get('tcp_baseline') is True else 'À appliquer',
+        'RSS actif et TCP Auto-Tuning Normal. Les tweaks réseau agressifs restent séparés et mesurables.',
+        'tcp_baseline','Faible','Microsoft Networking')
+
+    if 'radeon rx 7' in gpu or 'rx 7900' in gpu:
+        add('amd_antilag','AMD Radeon Anti-Lag','À vérifier dans Adrenalin',
+            'Anti-Lag est pertinent pour un profil compétitif. Acolyte n’écrit pas de clés Adrenalin privées : réglage guidé via AMD Software.',
+            'open_amd','Faible','AMD Radeon Anti-Lag')
+        add('amd_chill','AMD Radeon Chill','À laisser désactivé en compétitif',
+            'Chill limite dynamiquement les FPS et n’est pas interopérable avec Anti-Lag/Boost. Acolyte ne l’active pas dans le profil compétitif.',
+            'open_amd','Faible','AMD Radeon Chill')
+        add('hypr_rx','AMD HYPR-RX / AFMF','Optionnel',
+            'Compatible RX 7000. Pour le jeu compétitif, Acolyte ne l’active pas automatiquement car la génération d’images augmente le FPS affiché sans remplacer les images réellement rendues.',
+            'open_amd','Variable','AMD HYPR-RX')
+
+    add('hags','HAGS',
+        'OK' if states.get('hags_on') is True else 'À tester',
+        'HAGS reste une option mesurable : Acolyte ne la considère pas comme un gain garanti. Test avant/après recommandé.',
+        'hags_on','Variable','Windows Graphics')
+    add('windowed_opt','Optimisations jeux fenêtrés','À vérifier',
+        'Windows 11 peut réduire la latence de présentation pour les jeux DX10/DX11 fenêtrés ou sans bordure. Réglage guidé, pas de clé privée forcée.',
+        'open_graphics','Faible','Microsoft Support')
+    add('shader_cache','Cache shaders Fortnite','Uniquement en dépannage',
+        'Epic recommande de vider le cache DX/AMD en cas de gros stutters DX12. Acolyte ne le purge pas systématiquement car la recompilation peut provoquer des saccades temporaires.',
+        'shader_cache','Faible','Epic Games Support')
+    add('fortnite_perf','Fortnite Performance Renderer','Optionnel',
+        'Epic recommande le mode Performance pour viser davantage de FPS. Acolyte ne change pas ton renderer automatiquement afin d’éviter d’écraser ton choix DX12/Performance.',
+        'fortnite_settings','Faible','Epic Games Support')
+
+    excluded=[
+        'HPET / useplatformclock / timer hacks',
+        'NetworkThrottlingIndex forcé',
+        'désactivation globale de Defender / pare-feu / Windows Update',
+        'suppression massive de services Windows',
+        'priorités/affinités CPU forcées sans benchmark',
+        'overclock ou undervolt automatique',
+        'clés privées AMD Adrenalin non documentées',
+        'custom Windows modifié automatiquement'
+    ]
+    return {'cards':cards,'excluded':excluded,'cpu':system.get('cpu'),'gpu':system.get('gpu')}
+
+def apply_competitive_pack(root,scan=None):
+    """Pack conservateur et réversible. Les options variables restent hors du lot automatique."""
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant d’appliquer le pack compétitif complet.')
+    selected=list(COMPETITIVE_SAFE_OPTIONS)
+    result=apply_batch(root,selected,[])
+    return {
+        'message':'Pack compétitif sûr appliqué.',
+        'options':selected,
+        'detail':result,
+        'note':'HAGS, RSC/Interrupt Moderation, Nagle, VBS, HYPR-RX/AFMF et overclock restent hors du pack automatique et doivent être mesurés ou validés séparément.'
+    }
+
 def recommended_options(scan):
     settings=scan.get('settings') or {}
     states=settings.get('feature_states') or {}
