@@ -3208,6 +3208,7 @@ def hardware_telemetry_snapshot():
         'cpu_percent':None,'cpu_freq_mhz':None,'ram_percent':None,'ram_used_gb':None,
         'disk_percent':None,'gpu_percent':None,'gpu_memory_mb':None,
         'cpu_temp_c':None,'gpu_temp_c':None,'gpu_hotspot_c':None,
+        'cpu_power_w':None,'gpu_power_w':None,'gpu_clock_mhz':None,
         'sensor_source':'Windows/psutil','temperature_source':'indisponible',
         'thermal_warning':False,'thermal_detail':'',
     }
@@ -3250,6 +3251,18 @@ $mem=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapter
         result['gpu_hotspot_c']=first_temp(('hot spot','hotspot','junction'))
         result['gpu_temp_c']=first_temp(('gpu core','gpu package'))
         result['cpu_temp_c']=first_temp(('cpu package','tctl','tdie','cpu core'))
+        def first_sensor(sensor_type,patterns):
+            for row in sensors:
+                if str(row.get('SensorType') or '').casefold()!=sensor_type.casefold():continue
+                name=str(row.get('Name') or '');ident=str(row.get('Identifier') or '')
+                hay=(name+' '+ident).casefold()
+                if any(p in hay for p in patterns):
+                    try:return float(row.get('Value'))
+                    except (TypeError,ValueError):pass
+            return None
+        result['cpu_power_w']=first_sensor('Power',('cpu package','package','cpu cores'))
+        result['gpu_power_w']=first_sensor('Power',('gpu power','gpu package','total board','ppt'))
+        result['gpu_clock_mhz']=first_sensor('Clock',('gpu core','gpu clock'))
     gt=result.get('gpu_hotspot_c') or result.get('gpu_temp_c')
     ct=result.get('cpu_temp_c')
     warnings=[]
@@ -3473,6 +3486,14 @@ def ai_pc_context():
     if bench:
         b=bench[-1]
         lines.append(f"Dernier benchmark Fortnite: {float(b.get('avg_fps') or 0):.1f} FPS, 1% low {float(b.get('one_percent_low') or 0):.1f}, P99 {float(b.get('p99_frametime_ms') or 0):.2f} ms.")
+    try:
+        pair=latest_before_after_pair()
+        if pair:
+            cmp=pair.get('comparison') or {};metrics=cmp.get('metrics') or {}
+            fps=(metrics.get('avg_fps') or {}).get('percent')
+            low=(metrics.get('one_percent_low') or {}).get('percent')
+            lines.append(f"Comparaison AVANT/APRÈS: {cmp.get('verdict','?')} | FPS {float(fps or 0):+.1f}% | 1% low {float(low or 0):+.1f}%.")
+    except Exception:pass
     if rec:
         lines.append('Recommandations actuelles: '+' | '.join(str(x.get('title') or '') for x in rec[:5]))
     return '\n'.join(lines)[:2800]
