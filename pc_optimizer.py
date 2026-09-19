@@ -3036,9 +3036,11 @@ def restore_history_entry(root,event_id,backend=None):
     _write_json_file(AUDIT_LOG_FILE,rows)
     try:
         state=_load_state(root,backend)
-        for entry in list(state.get('entries') or []):
-            if entry.get('spec')==spec and entry.get('applied')==after:
-                state['entries'].remove(entry)
+        for entry in state.get('entries') or []:
+            if entry.get('spec')==spec:
+                entry['applied']=before
+                entry['pending']=False
+                entry.pop('target',None)
         _save_state(optimizer_state_path(root),state)
     except Exception:
         pass
@@ -3087,7 +3089,11 @@ def restore_since_checkpoint(root,checkpoint_id,backend=None):
     try:
         state=_load_state(root,backend)
         restored_specs=[x.get('spec') for x in candidates if x.get('id') in restored]
-        state['entries']=[e for e in state.get('entries',[]) if e.get('spec') not in restored_specs]
+        for entry in state.get('entries') or []:
+            if entry.get('spec') in restored_specs:
+                entry['applied']=backend.read(entry.get('spec'))
+                entry['pending']=False
+                entry.pop('target',None)
         _save_state(optimizer_state_path(root),state)
     except Exception:
         pass
