@@ -230,7 +230,10 @@ class PCPremiumUI:
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
-        self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=330)
+        try:self.compact_ui=self.parent.winfo_toplevel().winfo_screenwidth()<1300
+        except Exception:self.compact_ui=False
+        summary_width=255 if self.compact_ui else 330
+        self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=summary_width)
         self._build_sidebar();self._build_topbar();self._build_main();self._build_summary()
         self.show('dashboard')
         if os.environ.get('ACOLYTE_GUI_SMOKE')!='1':
@@ -238,7 +241,8 @@ class PCPremiumUI:
             self.parent.after(1000,self._tick_live)
 
     def _build_sidebar(self):
-        side=ctk.CTkFrame(self.root,width=236,fg_color='#0B1426',corner_radius=0)
+        side_width=204 if self.compact_ui else 236
+        side=ctk.CTkFrame(self.root,width=side_width,fg_color='#0B1426',corner_radius=0)
         side.grid(row=0,column=0,rowspan=2,sticky='nsew');side.grid_propagate(False)
         brand=ctk.CTkFrame(side,fg_color='transparent');brand.pack(fill='x',padx=16,pady=(18,12))
         ctk.CTkLabel(brand,text='ACOLYTE',text_color=COLORS['text'],font=ctk.CTkFont(size=27,weight='bold')).pack(anchor='w')
@@ -255,19 +259,27 @@ class PCPremiumUI:
 
     def _build_topbar(self):
         top=ctk.CTkFrame(self.root,fg_color='transparent')
-        top.grid(row=0,column=1,columnspan=2,sticky='ew',padx=18,pady=(14,10));top.grid_columnconfigure(0,weight=1)
-        title=ctk.CTkFrame(top,fg_color='transparent');title.grid(row=0,column=0,sticky='w')
-        ctk.CTkLabel(title,text='OPTIMISATION PC',text_color=COLORS['text'],font=ctk.CTkFont(size=30,weight='bold')).pack(anchor='w')
-        ctk.CTkLabel(title,text='Optimisation mesurée et restaurable pour ton PC gaming',text_color=COLORS['muted'],font=ctk.CTkFont(size=12)).pack(anchor='w')
-        actions=ctk.CTkFrame(top,fg_color='transparent');actions.grid(row=0,column=1,sticky='e')
-        self.scan_btn=ctk.CTkButton(actions,text='✦  SCAN COMPLET',command=self.scan_full,width=142,height=42,corner_radius=12,fg_color=COLORS['cyan2'])
-        self.scan_btn.pack(side='left',padx=4)
-        self.optimize_btn=ctk.CTkButton(actions,text='⚡  OPTIMISER',command=self.optimize_smart,width=134,height=42,corner_radius=12,fg_color=COLORS['purple'])
-        self.optimize_btn.pack(side='left',padx=4)
-        self.bench_btn=ctk.CTkButton(actions,text='◫  BENCHMARK',command=self.benchmark,width=132,height=42,corner_radius=12,fg_color='#1675E0')
-        self.bench_btn.pack(side='left',padx=4)
-        self.restore_btn=ctk.CTkButton(actions,text='↶  RESTAURER',command=self.restore,width=122,height=42,corner_radius=12,fg_color=COLORS['danger'])
-        self.restore_btn.pack(side='left',padx=4)
+        top.grid(row=0,column=1,columnspan=2,sticky='ew',padx=14 if self.compact_ui else 18,pady=(10 if self.compact_ui else 14,8))
+        top.grid_columnconfigure(0,weight=1)
+        title=ctk.CTkFrame(top,fg_color='transparent')
+        title.grid(row=0,column=0,sticky='w')
+        ctk.CTkLabel(title,text='OPTIMISATION PC',text_color=COLORS['text'],font=ctk.CTkFont(size=25 if self.compact_ui else 30,weight='bold')).pack(anchor='w')
+        ctk.CTkLabel(title,text='Optimisation mesurée et restaurable pour ton PC gaming',text_color=COLORS['muted'],font=ctk.CTkFont(size=10 if self.compact_ui else 12)).pack(anchor='w')
+        actions=ctk.CTkFrame(top,fg_color='transparent')
+        if self.compact_ui:
+            actions.grid(row=1,column=0,sticky='w',pady=(8,0))
+        else:
+            actions.grid(row=0,column=1,sticky='e')
+        widths=(112,108,108,104) if self.compact_ui else (142,134,132,122)
+        height=36 if self.compact_ui else 42
+        self.scan_btn=ctk.CTkButton(actions,text='✦  SCAN',command=self.scan_full,width=widths[0],height=height,corner_radius=10,fg_color=COLORS['cyan2'])
+        self.scan_btn.pack(side='left',padx=3)
+        self.optimize_btn=ctk.CTkButton(actions,text='⚡  OPTIMISER',command=self.optimize_smart,width=widths[1],height=height,corner_radius=10,fg_color=COLORS['purple'])
+        self.optimize_btn.pack(side='left',padx=3)
+        self.bench_btn=ctk.CTkButton(actions,text='◫  BENCH',command=self.benchmark,width=widths[2],height=height,corner_radius=10,fg_color='#1675E0')
+        self.bench_btn.pack(side='left',padx=3)
+        self.restore_btn=ctk.CTkButton(actions,text='↶  RESTAURER',command=self.restore,width=widths[3],height=height,corner_radius=10,fg_color=COLORS['danger'])
+        self.restore_btn.pack(side='left',padx=3)
 
     def _build_main(self):
         main=ctk.CTkFrame(self.root,fg_color='transparent')
@@ -1323,7 +1335,11 @@ class Coach:
 
         self.build_theme()
         root.title('Acolyte Fortnite — créé par Clemen4t — '+VERSION)
-        root.geometry('1200x900'); root.minsize(1060,780); root.configure(bg=COLORS['bg'])
+        sw=max(800,int(root.winfo_screenwidth()));sh=max(600,int(root.winfo_screenheight()))
+        ww=min(1600,max(960,sw-24));wh=min(900,max(680,sh-48))
+        wx=max(0,(sw-ww)//2);wy=max(0,(sh-wh)//2)
+        root.geometry(f'{ww}x{wh}+{wx}+{wy}')
+        root.minsize(min(960,ww),min(680,wh));root.configure(bg=COLORS['bg'])
 
         shell=tk.Frame(root,bg=COLORS['bg']); shell.pack(fill='both',expand=True)
         self.build_header(shell)
