@@ -528,6 +528,22 @@ def _feature_changes(option, backend):
         exe=_fortnite_executable()
         if exe:
             changes.append(({'kind':'registry','id':'fortnite_gpu','name':exe},{'exists':True,'type':1,'value':'GpuPreference=2;'}))
+    elif option=='telemetry_min':
+        dword('telemetry_level',1)
+    elif option=='vbs_off':
+        dword('vbs',0);dword('hvci',0)
+    elif option=='explorer_tweaks':
+        dword('explorer_sync_ads',0);dword('explorer_launch_to',1)
+    elif option=='background_services':
+        for service in ('DiagTrack','dmwappushservice'):
+            out,err,code=_run(['sc.exe','query',service])
+            if code==0:
+                changes.append(({'kind':'service','name':service},{'StartMode':'Disabled','State':'Stopped'}))
+        if not changes:raise RuntimeError('Aucun service de télémétrie ciblé n’est présent sur ce Windows.')
+    elif option=='tcp_baseline':
+        nic=_active_nic_info();name=str(nic.get('Name') or '')
+        if not name:raise RuntimeError('Aucune carte réseau physique active détectée.')
+        changes.append(({'kind':'tcp_baseline','name':name},{'rss':True,'autotuning':'Normal'}))
     else:
         raise ValueError('Option inconnue : '+str(option))
     # Déduplique les mêmes specs quand un profil composite les ajoute.
