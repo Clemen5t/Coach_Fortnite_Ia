@@ -232,7 +232,7 @@ class PCPremiumUI:
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.auto_rollback_var=tk.BooleanVar(value=bool(pc_optimizer.auto_rollback_enabled()))
         self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
-        self.overlay_window=None;self.overlay_label=None;self._last_auto_profile_check=0.0;self._automation_worker=False
+        self.overlay_window=None;self.overlay_label=None;self.monitor_value_labels={};self._last_auto_profile_check=0.0;self._automation_worker=False
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
@@ -618,7 +618,9 @@ class PCPremiumUI:
             card=ctk.CTkFrame(grid,fg_color='#0B111D',corner_radius=14,border_width=1,border_color='#1B2A44')
             card.grid(row=idx//3,column=idx%3,sticky='nsew',padx=5,pady=5)
             ctk.CTkLabel(card,text=title,text_color=COLORS['muted'],font=ctk.CTkFont(size=9,weight='bold')).pack(anchor='w',padx=14,pady=(12,2))
-            ctk.CTkLabel(card,text=value,text_color=accent,font=ctk.CTkFont(size=20,weight='bold')).pack(anchor='w',padx=14)
+            value_label=ctk.CTkLabel(card,text=value,text_color=accent,font=ctk.CTkFont(size=20,weight='bold'))
+            value_label.pack(anchor='w',padx=14)
+            self.monitor_value_labels[title]=value_label
             ctk.CTkLabel(card,text=sub,text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250,justify='left').pack(anchor='w',padx=14,pady=(2,12))
         source=telemetry.get('temperature_source') or 'indisponible'
         self._action_card('Source des températures',
@@ -629,10 +631,28 @@ class PCPremiumUI:
                 f"Type {disk.get('MediaType','?')} • Santé {disk.get('HealthStatus','?')} • Température {disk.get('Temperature','—')} °C • Usure {disk.get('Wear','—')}",
                 'SMART / Windows','Stockage','Nul')
 
+    def _apply_monitoring_live(self,telemetry):
+        if self.last_scan is None:self.last_scan={}
+        self.last_scan['telemetry']=telemetry
+        values={
+            'CPU':f"{telemetry.get('cpu_percent','—')} %",
+            'GPU':f"{telemetry.get('gpu_percent','—')} %",
+            'RAM':f"{telemetry.get('ram_percent','—')} %",
+            'DISQUE C:':f"{telemetry.get('disk_percent','—')} %",
+            'CPU TEMP':f"{telemetry.get('cpu_temp_c','—')} °C",
+            'GPU TEMP':f"{telemetry.get('gpu_temp_c','—')} °C",
+        }
+        for key,text in values.items():
+            widget=self.monitor_value_labels.get(key)
+            if widget is not None:
+                try:
+                    if widget.winfo_exists():widget.configure(text=text)
+                except Exception:pass
+        self._update_overlay()
+
     def refresh_monitoring(self):
         def done(value):
-            if self.last_scan is None:self.last_scan={}
-            self.last_scan['telemetry']=value
+            self._apply_monitoring_live(value)
             self._show_result('Monitoring matériel',value)
             self.show('monitoring')
         self._run('Lecture des capteurs',pc_optimizer.hardware_telemetry_snapshot,done)
@@ -1365,7 +1385,7 @@ class PCPremiumUI:
         self._set_quick_state(f"Version : {VERSION}\nAdministrateur : {'oui' if system.get('admin') else 'non'}\nJeux détectés : {len(games)}\nDémarrage Run : {startup if startup is not None else 'inconnu'}\nScore global : {score}/100\nSanté : {health_score}/100 • Gaming : {gaming_score}/100\n{mini}\nRéseau : {network.get('link','?')}")
         self._set_text(self.summary_text,self._scan_summary(data))
         self._set_text(self.details_text,json.dumps(data,ensure_ascii=False,indent=2))
-        if self.current=='dashboard':self.show('dashboard')
+        if self.current in ('dashboard','analysis','monitoring','updates'):self.show(self.current)
 
     def _persistent_reapply_done(self,result):
         applied=result.get('applied') or []
@@ -1700,7 +1720,12 @@ class PCPremiumUI:
         self._automation_worker=True
         games=list(((self.last_scan or {}).get('games') or []))
         def work():
-            messages=[]
+            messages=[];telemetry=None
+            try:
+                if self.current=='monitoring' or self.overlay_window is not None:
+                    telemetry=pc_optimizer.hardware_telemetry_snapshot()
+            except Exception as exc:
+                messages.append('Capteurs : '+str(exc))
             try:
                 profiles=pc_optimizer.run_auto_game_profiles(self.app_dir,games)
                 for item in profiles.get('actions') or []:
@@ -1718,6 +1743,7 @@ class PCPremiumUI:
                 messages.append('Rollback : '+str(exc))
             def done():
                 self._automation_worker=False
+                if telemetry is not None:self._apply_monitoring_live(telemetry)
                 for msg in messages:self.log(msg)
                 if messages and self.current in ('games','history'):
                     try:self.show(self.current)
