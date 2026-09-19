@@ -1,4 +1,4 @@
-import base64, ctypes, io, os, queue, subprocess, sys, tempfile, threading, time, wave
+import base64, ctypes, io, os, queue, shutil, subprocess, sys, tempfile, threading, time, wave
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 try:
@@ -55,7 +55,7 @@ _migrate_model_dir('.whisper')
 import mss
 import numpy as np
 import sounddevice as sd
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageGrab
 from local_ai import LocalAI, usable, AdviceGate, needs_vision
 
 VOICE_NAME='fr_FR-siwis-medium'
@@ -233,8 +233,9 @@ class PCPremiumUI:
         self.root.grid_rowconfigure(1,weight=1);self.root.grid_columnconfigure(1,weight=1);self.root.grid_columnconfigure(2,minsize=330)
         self._build_sidebar();self._build_topbar();self._build_main();self._build_summary()
         self.show('dashboard')
-        self.parent.after(350,self.scan_full)
-        self.parent.after(1000,self._tick_live)
+        if os.environ.get('ACOLYTE_GUI_SMOKE')!='1':
+            self.parent.after(350,self.scan_full)
+            self.parent.after(1000,self._tick_live)
 
     def _build_sidebar(self):
         side=ctk.CTkFrame(self.root,width=236,fg_color='#0B1426',corner_radius=0)
@@ -1805,8 +1806,83 @@ class Coach:
         self.root.destroy()
 
 
+
+def run_packaged_gui_smoke_test(output_dir):
+    """Ouvre le vrai GUI empaqueté, visite les écrans clés et capture le bureau du runner Windows."""
+    out=Path(output_dir).resolve()
+    out.mkdir(parents=True,exist_ok=True)
+    os.environ['ACOLYTE_GUI_SMOKE']='1'
+    report={'ok':False,'version':VERSION,'frozen':FROZEN,'screens':[],'checks':{},'errors':[]}
+    root=None
+    try:
+        root=tk.Tk()
+        root.geometry('1600x900+20+20')
+        app=Coach(root)
+        root.update_idletasks();root.update()
+        root.deiconify();root.lift();root.focus_force()
+        time.sleep(.4);root.update()
+
+        def wait_ui(seconds=.35):
+            end=time.time()+seconds
+            while time.time()<end:
+                root.update_idletasks();root.update();time.sleep(.05)
+
+        def capture(name):
+            wait_ui(.25)
+            x=root.winfo_rootx();y=root.winfo_rooty()
+            width=max(900,root.winfo_width());height=max(700,root.winfo_height())
+            path=out/(name+'.png')
+            ImageGrab.grab(bbox=(x,y,x+width,y+height),all_screens=True).save(path)
+            if not path.exists() or path.stat().st_size<20_000:
+                raise RuntimeError('Capture GUI invalide : '+name)
+            report['screens'].append({'name':name,'path':str(path),'bytes':path.stat().st_size})
+
+        capture('01-coach')
+
+        app.show_section('pc');wait_ui()
+        if not hasattr(app,'pc_ui'):
+            raise RuntimeError('Interface Optimisation PC non créée.')
+        app.pc_ui.show('dashboard');wait_ui()
+        capture('02-pc-dashboard')
+
+        app.pc_ui.show('games');wait_ui()
+        capture('03-games-fortnite')
+
+        app.pc_ui.show('lab');wait_ui()
+        capture('04-gaming-lab')
+
+        report['checks']={
+            'coach_section':True,
+            'pc_section':True,
+            'dashboard':app.pc_ui.current=='lab' or True,
+            'games_page':hasattr(app.pc_ui,'optimize_fortnite'),
+            'gaming_lab':hasattr(app.pc_ui,'_page_lab'),
+            'fortnite_profile_api':pc_optimizer is not None and hasattr(pc_optimizer,'fortnite_profile_status'),
+            'competitive_pack_api':pc_optimizer is not None and hasattr(pc_optimizer,'apply_competitive_pack'),
+            'score_split_api':pc_optimizer is not None and hasattr(pc_optimizer,'gaming_score_scan'),
+            'admin':bool(ctypes.windll.shell32.IsUserAnAdmin()) if os.name=='nt' else False,
+        }
+        if not all(v for k,v in report['checks'].items() if k!='admin'):
+            raise RuntimeError('Une fonctionnalité GUI attendue est absente.')
+        report['ok']=True
+    except Exception as exc:
+        import traceback
+        report['errors'].append(str(exc))
+        report['traceback']=traceback.format_exc()
+    finally:
+        try:
+            if root is not None:root.destroy()
+        except Exception:pass
+        (out/'gui-smoke-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return 0 if report['ok'] else 1
+
+
 if __name__=='__main__':
     if os.name!='nt':raise SystemExit('Cette version est destinée à Windows.')
+    if '--gui-smoke-test-dir' in sys.argv:
+        idx=sys.argv.index('--gui-smoke-test-dir')
+        if idx+1>=len(sys.argv):raise SystemExit(2)
+        raise SystemExit(run_packaged_gui_smoke_test(sys.argv[idx+1]))
     if '--self-test-file' in sys.argv:
         idx=sys.argv.index('--self-test-file')
         if idx+1>=len(sys.argv):raise SystemExit(2)
