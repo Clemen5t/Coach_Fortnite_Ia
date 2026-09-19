@@ -1,5 +1,5 @@
 """Optimisation Windows 11 locale pour Acolyte. Réglages mesurables, prudents et réversibles."""
-import ctypes, hashlib, ipaddress, json, os, re, socket, statistics, subprocess, sys, tempfile, time
+import ctypes, hashlib, ipaddress, json, os, re, shutil, socket, statistics, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
