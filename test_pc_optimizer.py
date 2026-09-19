@@ -168,6 +168,14 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(rows['-NOTEXTURESTREAMING']['status'],'Non appliqué')
         self.assertEqual(rows['HPET / bcdedit timers / timer hacks']['status'],'Refusé')
 
+    def test_ping_hostname_validation(self):
+        with patch.object(pc.socket,'gethostbyname',return_value='1.2.3.4'), \
+             patch.object(pc,'_run',return_value=('Reply from 1.2.3.4: bytes=32 time=10ms TTL=50\n','',0)):
+            row=pc.ping('ping-eu.ds.on.epicgames.com',1)
+        self.assertEqual(row['host'],'ping-eu.ds.on.epicgames.com')
+        self.assertEqual(row['address'],'1.2.3.4')
+        self.assertEqual(row['status'],'ok')
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
