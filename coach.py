@@ -2338,6 +2338,13 @@ def run_packaged_system_smoke_test(output_file):
             'gaming_audit_cards':isinstance(audit.get('cards'),list) and len(audit.get('cards'))>=5,
             'fortnite_status':isinstance(fortnite,dict) and fortnite.get('game')=='Fortnite',
             'presentmon_status':isinstance(presentmon,dict) and 'installed' in presentmon,
+            'telemetry_snapshot':isinstance(scan.get('telemetry'),dict) and 'cpu_percent' in (scan.get('telemetry') or {}),
+            'startup_detail':isinstance(scan.get('startup_detail'),dict) and 'count' in (scan.get('startup_detail') or {}),
+            'versions_snapshot':isinstance(scan.get('versions'),dict),
+            'score_explanation':isinstance(scan.get('score_explanation'),str) and 'Score global' in scan.get('score_explanation',''),
+            'audit_history_api':hasattr(pc_optimizer,'optimizer_history') and hasattr(pc_optimizer,'restore_history_entry'),
+            'benchmark_policy_api':hasattr(pc_optimizer,'compare_benchmark_pair') and hasattr(pc_optimizer,'evaluate_latest_benchmark_policy'),
+            'live_overlay_api':hasattr(pc_optimizer,'start_live_game_capture') and hasattr(pc_optimizer,'live_game_capture_metrics'),
             'admin':bool(ctypes.windll.shell32.IsUserAnAdmin()) if os.name=='nt' else False,
         }
         report['summary']={
@@ -2405,6 +2412,15 @@ def run_packaged_gui_smoke_test(output_dir):
         app.pc_ui.show('lab');wait_ui()
         capture('04-gaming-lab')
 
+        app.pc_ui.show('analysis');wait_ui()
+        capture('05-analysis-complete')
+
+        app.pc_ui.show('monitoring');wait_ui()
+        capture('06-monitoring')
+
+        app.pc_ui.show('history');wait_ui()
+        capture('07-history')
+
         # Teste le flux BIOS sans lancer de vrai redémarrage.
         original_askyesno=messagebox.askyesno
         original_fw=pc_optimizer.reboot_to_firmware
@@ -2453,6 +2469,12 @@ def run_packaged_gui_smoke_test(output_dir):
             'fortnite_profile_api':pc_optimizer is not None and hasattr(pc_optimizer,'fortnite_profile_status'),
             'competitive_pack_api':pc_optimizer is not None and hasattr(pc_optimizer,'apply_competitive_pack'),
             'score_split_api':pc_optimizer is not None and hasattr(pc_optimizer,'gaming_score_scan'),
+            'analysis_page':hasattr(app.pc_ui,'_page_analysis'),
+            'monitoring_page':hasattr(app.pc_ui,'_page_monitoring'),
+            'history_page':hasattr(app.pc_ui,'_page_history'),
+            'overlay_api':hasattr(app.pc_ui,'toggle_overlay') and hasattr(pc_optimizer,'live_game_capture_metrics'),
+            'auto_profiles_api':hasattr(pc_optimizer,'run_auto_game_profiles'),
+            'score_explanation_api':hasattr(pc_optimizer,'score_explanation'),
             'uefi_fallback_api':pc_optimizer is not None and hasattr(pc_optimizer,'reboot_to_advanced_startup'),
             'bios_initial_cancel_safe':bios_test['initial_cancel'],
             'bios_fallback_cancel_safe':bios_test['fallback_cancel'],
