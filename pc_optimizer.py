@@ -1,5 +1,5 @@
 """Optimisation Windows 11 locale pour Acolyte. Réglages mesurables, prudents et réversibles."""
-import ctypes, hashlib, ipaddress, json, os, re, socket, statistics, subprocess, tempfile, time
+import ctypes, hashlib, ipaddress, json, os, re, socket, statistics, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -700,6 +700,93 @@ def _feature_changes(option, backend):
         if key in seen:continue
         seen.add(key);unique.append((spec,value))
     return unique
+
+ADMIN_OPTIONS={
+    'usb','hags_on','fast_startup_off','hibernation_off','sysmain_off',
+    'net_power','net_eee','nagle_off','p2p_off','amd_gpu','telemetry_min',
+    'vbs_off','background_services','tcp_baseline'
+}
+
+def options_require_admin(options):
+    return any(str(x) in ADMIN_OPTIONS for x in (options or []))
+
+def _write_result_json(path,data):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_suffix(path.suffix+'.tmp')
+    try:
+        tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+        os.replace(tmp,path)
+    finally:
+        try:
+            if tmp.exists():tmp.unlink()
+        except OSError:pass
+
+def _apply_batch_local(root,enable,disable):
+    results=[]
+    if enable:
+        results.append(apply_selected(enable,root))
+    for key in disable:
+        results.append(restore_feature(root,key))
+    return '\n'.join(str(x) for x in results if x)
+
+def _elevated_batch_main(request_path):
+    request_path=Path(request_path).resolve()
+    result_path=request_path.with_suffix('.result.json')
+    try:
+        if not is_admin():
+            raise PermissionError('Le processus élevé ne possède pas les droits administrateur.')
+        req=json.loads(request_path.read_text(encoding='utf-8'))
+        root=Path(req['root']).resolve()
+        enable=[x for x in req.get('enable',[]) if x in OPTIONS]
+        disable=[x for x in req.get('disable',[]) if x in OPTIONS]
+        message=_apply_batch_local(root,enable,disable)
+        _write_result_json(result_path,{'ok':True,'message':message})
+        return 0
+    except Exception as exc:
+        _write_result_json(result_path,{'ok':False,'error':str(exc)})
+        return 1
+
+def _apply_batch_elevated(root,enable,disable,timeout=240):
+    folder=optimizer_data_dir(root)/'Elevation'
+    folder.mkdir(parents=True,exist_ok=True)
+    token=uuid.uuid4().hex
+    request_path=folder/(token+'.request.json')
+    result_path=request_path.with_suffix('.result.json')
+    request={'root':str(Path(root).resolve()),'enable':list(enable),'disable':list(disable)}
+    _write_result_json(request_path,request)
+    params=subprocess.list2cmdline([str(Path(__file__).resolve()),'--elevated-batch',str(request_path)])
+    code=ctypes.windll.shell32.ShellExecuteW(
+        None,'runas',str(Path(sys.executable).resolve()),params,str(Path(root).resolve()),0)
+    if code<=32:
+        try:request_path.unlink()
+        except OSError:pass
+        if code==5:
+            raise PermissionError('Autorisation administrateur refusée. Accepte la fenêtre Windows UAC pour appliquer ces réglages.')
+        raise OSError(int(code),'Impossible de lancer l’opération en administrateur.')
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if result_path.exists():
+            try:
+                data=json.loads(result_path.read_text(encoding='utf-8'))
+            finally:
+                try:request_path.unlink()
+                except OSError:pass
+                try:result_path.unlink()
+                except OSError:pass
+            if data.get('ok'):return str(data.get('message') or 'Changements appliqués.')
+            raise RuntimeError(str(data.get('error') or 'L’opération administrateur a échoué.'))
+        time.sleep(0.2)
+    raise TimeoutError('La demande administrateur n’a pas terminé. Vérifie si une fenêtre UAC attend une réponse.')
+
+def apply_batch(root,enable=None,disable=None):
+    """Applique un lot avec une seule élévation UAC quand Windows l’exige."""
+    enable=[x for x in (enable or []) if x in OPTIONS]
+    disable=[x for x in (disable or []) if x in OPTIONS]
+    all_options=list(dict.fromkeys(enable+disable))
+    if not all_options:return 'Aucun changement demandé.'
+    if is_admin() or not options_require_admin(all_options):
+        return _apply_batch_local(root,enable,disable)
+    return _apply_batch_elevated(root,enable,disable)
 
 def option_states(backend=None):
     backend=backend or WindowsSettings()
@@ -1849,3 +1936,8 @@ def open_benchmark_folder():
     if os.name!='nt':raise RuntimeError('Ouverture du dossier disponible uniquement sous Windows.')
     os.startfile(str(BENCH_DATA_DIR))
     return str(BENCH_DATA_DIR)
+
+
+if __name__=='__main__':
+    if len(sys.argv)>=3 and sys.argv[1]=='--elevated-batch':
+        raise SystemExit(_elevated_batch_main(sys.argv[2]))
