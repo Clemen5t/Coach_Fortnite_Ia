@@ -14,13 +14,13 @@ import uuid
 import zipfile
 
 APP_ID = 'coach-fortnite-local'
-FILES = {'coach.py','local_ai.py','pc_optimizer.py','updater.py','requirements.txt','Lancer.bat','AcolyteLauncher.pyw',
+FILES = {'coach.py','local_ai.py','pc_optimizer.py','updater.py','requirements.txt','Lancer.bat',
          'Installer-modele.bat','LIRE-MOI.txt','README.md','VERSION',
          'update-manifest.json','test_local_ai.py','test_updater.py','.gitignore'}
-REQUIRED = {'coach.py','local_ai.py','updater.py','requirements.txt','VERSION','update-manifest.json','Lancer.bat','AcolyteLauncher.pyw'}
+REQUIRED = {'coach.py','local_ai.py','updater.py','requirements.txt','VERSION','update-manifest.json','Lancer.bat'}
 # Compatibilité : un ancien updater (<=1.2.6) ne connaît pas encore pc_optimizer.py.
 # Le bootstrap ci-dessous autorise uniquement ce nouveau module officiel lors de la transition.
-BOOTSTRAP_FILES = {'pc_optimizer.py'}
+BOOTSTRAP_FILES = {'pc_optimizer.py','AcolyteLauncher.pyw'}
 LIMIT = 12 * 1024 * 1024
 
 def read_json(path, default=None):
