@@ -1244,8 +1244,29 @@ class PCPremiumUI:
             ctk.CTkLabel(right,text=row.get('action',''),text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=180,justify='right').pack(anchor='e',pady=(4,0))
 
     def _page_updates(self):
-        self._hero('Mises à jour','Accès direct aux sources officielles. Acolyte ne prétend pas qu’un pilote est à jour sans vérification.',COLORS['cyan'])
-        self._button_row([('Windows Update',lambda:self._open('updates'),COLORS['cyan2']),('AMD',lambda:self._open('amd'),COLORS['purple']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2']),('Intel',lambda:self._open('intel'),COLORS['panel2'])])
+        self._hero('Mises à jour & versions','Acolyte lit les versions installées localement et peut interroger Windows Update. Il ne déclare jamais un pilote ou BIOS « à jour » sans source vérifiée.',COLORS['cyan'])
+        versions=((self.last_scan or {}).get('versions') or pc_optimizer.installed_versions_snapshot())
+        gpu_rows=versions.get('gpu') or []
+        if isinstance(gpu_rows,dict):gpu_rows=[gpu_rows]
+        for row in gpu_rows[:3]:
+            self._action_card(str(row.get('Name') or 'GPU'),
+                f"Pilote installé : {row.get('DriverVersion','?')} • Date : {row.get('DriverDate','?')}",
+                'Installé','Maintenance','Nul')
+        bios=versions.get('bios') or {}
+        board=versions.get('board') or {}
+        self._action_card('BIOS / carte mère',
+            f"{board.get('Manufacturer','')} {board.get('Product','')} • BIOS installé {bios.get('SMBIOSBIOSVersion','?')} • Date {bios.get('ReleaseDate','?')}",
+            'Installé','Firmware','Nul')
+        self._button_row([
+            ('RECHERCHER WINDOWS UPDATE',self.search_windows_updates,COLORS['cyan2']),
+            ('OUVRIR WINDOWS UPDATE',lambda:self._open('updates'),COLORS['panel2']),
+            ('AMD OFFICIEL',lambda:self._open('amd'),COLORS['purple']),
+            ('NVIDIA OFFICIEL',lambda:self._open('nvidia'),COLORS['panel2']),
+            ('INTEL OFFICIEL',lambda:self._open('intel'),COLORS['panel2'])
+        ])
+        self._action_card('Vérification fabricant',
+            'Les versions disponibles côté AMD/NVIDIA/MSI peuvent évoluer. Les boutons officiels servent de source de vérification ; Acolyte ne fabrique pas un numéro de version « latest ».',
+            'À vérifier en ligne','Fiabilité','Nul')
 
     def _page_usb(self):
         self._hero('USB & périphériques','Diagnostic de périphériques et test optionnel sans suspension USB sur secteur. Aucun gain de latence n’est garanti.',COLORS['cyan'])
