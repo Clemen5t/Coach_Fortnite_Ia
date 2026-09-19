@@ -2431,6 +2431,30 @@ def run_packaged_gui_smoke_test(output_dir):
         app.pc_ui.show('history');wait_ui()
         capture('07-history')
 
+        # Teste l'overlay avec un moteur PresentMon simulé : aucun ETW réel n'est lancé.
+        original_live_start=pc_optimizer.start_live_game_capture
+        original_live_read=pc_optimizer.live_game_capture_metrics
+        original_live_stop=pc_optimizer.stop_live_game_capture
+        overlay_test={'metrics_visible':False,'stopped':False}
+        try:
+            stopped={'value':False}
+            pc_optimizer.start_live_game_capture=lambda *a,**k:{'process':None,'csv_path':'simulated.csv'}
+            pc_optimizer.live_game_capture_metrics=lambda *a,**k:{
+                'fps':240.0,'one_percent_low':180.0,'frametime_ms':4.17,'p99_ms':6.0,'samples':300,'running':True}
+            pc_optimizer.stop_live_game_capture=lambda *a,**k:stopped.__setitem__('value',True)
+            app.pc_ui.toggle_overlay();wait_ui(.15);app.pc_ui._update_overlay();wait_ui(.1)
+            overlay_test['metrics_visible']='FPS 240' in str(app.pc_ui.overlay_label.cget('text'))
+            app.pc_ui.toggle_overlay();wait_ui(.1)
+            overlay_test['stopped']=stopped['value'] and app.pc_ui.overlay_window is None
+        finally:
+            pc_optimizer.start_live_game_capture=original_live_start
+            pc_optimizer.live_game_capture_metrics=original_live_read
+            pc_optimizer.stop_live_game_capture=original_live_stop
+            if app.pc_ui.overlay_window is not None:
+                try:app.pc_ui.overlay_window.destroy()
+                except Exception:pass
+                app.pc_ui.overlay_window=None;app.pc_ui.overlay_label=None;app.pc_ui.overlay_capture=None
+
         # Teste le flux BIOS sans lancer de vrai redémarrage.
         original_askyesno=messagebox.askyesno
         original_fw=pc_optimizer.reboot_to_firmware
@@ -2483,6 +2507,8 @@ def run_packaged_gui_smoke_test(output_dir):
             'monitoring_page':hasattr(app.pc_ui,'_page_monitoring'),
             'history_page':hasattr(app.pc_ui,'_page_history'),
             'overlay_api':hasattr(app.pc_ui,'toggle_overlay') and hasattr(pc_optimizer,'live_game_capture_metrics'),
+            'overlay_metrics_visible':overlay_test['metrics_visible'],
+            'overlay_stop_safe':overlay_test['stopped'],
             'auto_profiles_api':hasattr(pc_optimizer,'run_auto_game_profiles'),
             'score_explanation_api':hasattr(pc_optimizer,'score_explanation'),
             'uefi_fallback_api':pc_optimizer is not None and hasattr(pc_optimizer,'reboot_to_advanced_startup'),
