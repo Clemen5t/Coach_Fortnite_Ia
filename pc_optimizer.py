@@ -1803,6 +1803,23 @@ LINKS = {
 }
 
 
+def open_amd_software():
+    if os.name!='nt':raise RuntimeError('AMD Software nécessite Windows.')
+    candidates=[
+        Path(os.environ.get('ProgramFiles',r'C:\Program Files'))/'AMD'/'CNext'/'CNext'/'RadeonSoftware.exe',
+        Path(r'C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe')
+    ]
+    exe=next((x for x in candidates if x.exists()),None)
+    if exe:
+        os.startfile(str(exe));return str(exe)
+    open_panel('amd')
+    return 'AMD Software introuvable : page officielle AMD ouverte.'
+
+def open_graphics_settings():
+    if os.name!='nt':raise RuntimeError('Ce panneau nécessite Windows.')
+    os.startfile('ms-settings:display-advancedgraphics')
+    return 'Paramètres graphiques Windows ouverts.'
+
 def open_panel(name):
     import webbrowser
     target = LINKS[name]
