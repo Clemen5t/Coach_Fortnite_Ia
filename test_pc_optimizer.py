@@ -152,6 +152,22 @@ class StateSyncTests(unittest.TestCase):
         b=[{'avg':10,'jitter':5,'loss':1}]
         self.assertLess(pc._network_quality_score(a),pc._network_quality_score(b))
 
+    def test_complete_profile_avoids_risky_options(self):
+        with patch.object(pc,'analyze',return_value={'cpu':'AMD Ryzen 7 7800X3D','gpu':'AMD Radeon RX 7900 XT'}):
+            opts=pc.complete_gaming_profile_options()
+        self.assertIn('game',opts)
+        self.assertIn('amd_gpu',opts)
+        self.assertIn('balanced',opts)
+        self.assertNotIn('vbs_off',opts)
+        self.assertNotIn('sysmain_off',opts)
+        self.assertNotIn('nagle_off',opts)
+
+    def test_research_audit_rejects_blind_launch_args(self):
+        rows={x['name']:x for x in pc.optimization_research_audit()}
+        self.assertEqual(rows['-NOSPLASH']['status'],'Non appliqué')
+        self.assertEqual(rows['-NOTEXTURESTREAMING']['status'],'Non appliqué')
+        self.assertEqual(rows['HPET / bcdedit timers / timer hacks']['status'],'Refusé')
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
