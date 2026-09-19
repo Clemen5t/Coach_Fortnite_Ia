@@ -50,6 +50,21 @@ jobs:
           }
           Write-Host ($test | ConvertTo-Json -Compress)
 
+      - name: Read-only Windows system smoke test
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "acolyte-system-smoke.json"
+          if (Test-Path $report) { Remove-Item $report -Force }
+          $p = Start-Process -FilePath ".\dist\Acolyte.exe" -ArgumentList "--system-smoke-test-file", ('"' + $report + '"') -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            try { $p.Kill() } catch {}
+            throw "Acolyte system smoke test timed out"
+          }
+          if (!(Test-Path $report)) { throw "Acolyte system smoke report missing" }
+          $data = Get-Content $report -Raw | ConvertFrom-Json
+          Write-Host ($data | ConvertTo-Json -Depth 10 -Compress)
+          if ($p.ExitCode -ne 0 -or !$data.ok) { throw "Acolyte system smoke test failed" }
+
       - name: GUI desktop smoke test
         shell: pwsh
         run: |
@@ -73,6 +88,8 @@ jobs:
           }
           New-Item -ItemType Directory -Path ".\gui-smoke" -Force | Out-Null
           Copy-Item "$out\*" ".\gui-smoke\" -Recurse -Force
+          $sysReport = Join-Path $env:RUNNER_TEMP "acolyte-system-smoke.json"
+          if (Test-Path $sysReport) { Copy-Item $sysReport ".\gui-smoke\system-smoke-report.json" -Force }
           Write-Host ($report | ConvertTo-Json -Depth 8 -Compress)
 
       - uses: actions/upload-artifact@v7
