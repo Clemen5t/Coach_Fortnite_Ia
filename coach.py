@@ -1007,9 +1007,10 @@ class PCPremiumUI:
             ctk.CTkLabel(left,text='Acolyte a détecté la sous-fréquence sans te demander d’ouvrir le BIOS. L’activation du profil mémoire elle-même reste un réglage firmware et n’est pas forcée depuis Windows.',text_color=COLORS['warning'],font=ctk.CTkFont(size=9,weight='bold'),wraplength=850,justify='left').pack(anchor='w',pady=(7,0))
 
         self._action_card('Rapport RAM / UEFI complet','Relit les modules, la fréquence configurée, la tension exposée par Windows et la virtualisation.','Automatique','Diagnostic','Nul',command=lambda:self._diagnostic('bios'),button='VOIR LE RAPPORT')
-        bios_buttons=[('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])]
-        if mem.get('profile_likely_off'):
-            bios_buttons.insert(0,('↻ REDÉMARRER VERS UEFI',self.reboot_to_uefi,COLORS['warning']))
+        bios_buttons=[
+            ('↻ OUVRIR LE BIOS / UEFI',self.reboot_to_uefi,COLORS['warning']),
+            ('Support MSI B650 Gaming Plus WiFi',lambda:self._open('board'),COLORS['panel2'])
+        ]
         self._button_row(bios_buttons)
 
     def reboot_to_uefi(self):
@@ -1017,10 +1018,11 @@ class PCPremiumUI:
         mem=(((self.last_scan or {}).get('bios') or {}).get('memory_profile') or {})
         current=mem.get('current_mt') or '?';target=mem.get('target_mt') or '?'
         msg=(
-            f'Acolyte confirme actuellement {current} MT/s et estime la cible à {target} MT/s.\n\n'
-            'Windows ne peut pas activer proprement EXPO/XMP à lui seul : fréquence, tension et timings sont initialisés avant Windows.\n\n'
-            'Acolyte peut redémarrer directement dans l’UEFI pour que tu n’aies pas à chercher la touche au démarrage. '
-            'Aucune valeur BIOS ne sera changée automatiquement.\n\nRedémarrer maintenant vers l’UEFI ?'
+            f'RAM détectée : {current} MT/s • cible estimée : {target} MT/s.\n\n'
+            'Acolyte va demander à Windows de redémarrer directement dans le BIOS / UEFI.\n\n'
+            '⚠ Ferme et enregistre tes applications avant de continuer. '
+            'Acolyte ne modifiera aucune valeur du BIOS automatiquement.\n\n'
+            'Redémarrer maintenant vers le BIOS / UEFI ?'
         )
         if not messagebox.askyesno('Assistant RAM / EXPO',msg):return
         try:pc_optimizer.reboot_to_firmware()
