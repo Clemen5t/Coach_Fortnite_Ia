@@ -232,7 +232,8 @@ class PCPremiumUI:
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.auto_rollback_var=tk.BooleanVar(value=bool(pc_optimizer.auto_rollback_enabled()))
         self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
-        self.overlay_window=None;self.overlay_label=None;self.monitor_value_labels={};self._last_auto_profile_check=0.0;self._automation_worker=False
+        self.overlay_window=None;self.overlay_label=None;self.overlay_capture=None;self.overlay_live_metrics={};self._overlay_retry_at=0.0
+        self.monitor_value_labels={};self._last_auto_profile_check=0.0;self._automation_worker=False
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
@@ -657,8 +658,25 @@ class PCPremiumUI:
             self.show('monitoring')
         self._run('Lecture des capteurs',pc_optimizer.hardware_telemetry_snapshot,done)
 
+    def _stop_overlay_capture(self):
+        if self.overlay_capture is not None:
+            try:pc_optimizer.stop_live_game_capture(self.overlay_capture)
+            except Exception:pass
+        self.overlay_capture=None;self.overlay_live_metrics={}
+
+    def _try_start_overlay_capture(self):
+        if self.overlay_window is None or self.overlay_capture is not None:return
+        if time.time()<self._overlay_retry_at:return
+        self._overlay_retry_at=time.time()+5
+        try:
+            self.overlay_capture=pc_optimizer.start_live_game_capture()
+            self.log('Overlay FPS PresentMon démarré.')
+        except Exception as exc:
+            self.log('Overlay FPS en attente : '+str(exc))
+
     def toggle_overlay(self):
         if self.overlay_window is not None:
+            self._stop_overlay_capture()
             try:self.overlay_window.destroy()
             except Exception:pass
             self.overlay_window=None;self.overlay_label=None
@@ -676,21 +694,29 @@ class PCPremiumUI:
         self.overlay_label=tk.Label(frame,text='',bg='#07101F',fg=COLORS['text'],font=('Consolas',10),justify='left',anchor='w')
         self.overlay_label.pack(fill='both',expand=True,padx=10,pady=(0,8))
         self.overlay_window=top
+        self._try_start_overlay_capture()
         self._update_overlay()
         if self.current=='monitoring':self.show('monitoring')
 
     def _update_overlay(self):
         if self.overlay_window is None or self.overlay_label is None:return
         try:
+            self._try_start_overlay_capture()
+            if self.overlay_capture is not None:
+                proc=self.overlay_capture.get('process')
+                if proc is not None and proc.poll() is not None:
+                    self._stop_overlay_capture()
+                else:
+                    live=pc_optimizer.live_game_capture_metrics(self.overlay_capture)
+                    if live:self.overlay_live_metrics=live
             cpu=psutil.cpu_percent(interval=None) if psutil else 0
             mem=psutil.virtual_memory().percent if psutil else 0
             t=((self.last_scan or {}).get('telemetry') or {})
-            history=pc_optimizer.benchmark_history(1)
-            bench=history[-1] if history else {}
-            last_fps=(f"{float(bench.get('avg_fps') or 0):.0f} FPS • 1% {float(bench.get('one_percent_low') or 0):.0f} (dernier bench)"
-                      if bench else 'FPS : lance un benchmark PresentMon')
+            live=self.overlay_live_metrics or {}
+            fps_line=(f"FPS {float(live.get('fps') or 0):.0f} • 1% {float(live.get('one_percent_low') or 0):.0f} • {float(live.get('frametime_ms') or 0):.2f} ms"
+                      if live else 'FPS live : en attente de PresentMon / Fortnite')
             temp=f"CPU {t.get('cpu_temp_c','—')}°C • GPU {t.get('gpu_temp_c','—')}°C • Hotspot {t.get('gpu_hotspot_c','—')}°C"
-            self.overlay_label.configure(text=f"{last_fps}\nCPU {cpu:.0f}% • RAM {mem:.0f}%\n{temp}")
+            self.overlay_label.configure(text=f"{fps_line}\nCPU {cpu:.0f}% • RAM {mem:.0f}%\n{temp}")
         except Exception:pass
 
     def _page_history(self):
@@ -1027,6 +1053,7 @@ class PCPremiumUI:
         except Exception:duration=60
         label=self.game_phase_var.get().strip() or 'Libre'
         if not messagebox.askyesno('Benchmark Fortnite',f'Capture : {duration} secondes\nPhase : {label}\n\nAcolyte va se minimiser. Tu auras 5 secondes pour retourner dans Fortnite avant le début de la mesure.\n\nPour comparer AVANT/APRÈS, refais exactement la même scène, résolution et limite FPS. Continuer ?'):return
+        self._stop_overlay_capture()
         try:
             top=self.parent.winfo_toplevel();top.iconify();self._bench_hidden=True
         except Exception:pass
@@ -1040,6 +1067,8 @@ class PCPremiumUI:
             try:
                 top=self.parent.winfo_toplevel();top.deiconify();top.lift();top.focus_force()
             except Exception:pass
+        if self.overlay_window is not None:
+            self.parent.after(500,self._try_start_overlay_capture)
 
     def _game_benchmark_done(self,result):
         self._restore_bench_window()
@@ -1698,6 +1727,13 @@ class PCPremiumUI:
         self.busy=False;self._set_busy(False);self.log('[ERREUR] '+label+' : '+str(exc))
         messagebox.showerror('Acolyte Performance',label+' :\n'+str(exc))
 
+    def shutdown_runtime(self):
+        self._stop_overlay_capture()
+        if self.overlay_window is not None:
+            try:self.overlay_window.destroy()
+            except Exception:pass
+        self.overlay_window=None;self.overlay_label=None
+
     def _set_busy(self,on):
         state='disabled' if on else 'normal'
         for b in (self.scan_btn,self.optimize_btn,self.bench_btn,self.restore_btn):b.configure(state=state)
@@ -2272,6 +2308,9 @@ class Coach:
             try:self.hotkey_listener.stop()
             except Exception:pass
         try:sd.stop()
+        except Exception:pass
+        try:
+            if hasattr(self,'pc_ui'):self.pc_ui.shutdown_runtime()
         except Exception:pass
         self.root.destroy()
 
