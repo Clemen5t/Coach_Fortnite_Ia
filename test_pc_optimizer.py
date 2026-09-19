@@ -81,6 +81,31 @@ class StateSyncTests(unittest.TestCase):
         for key in ('amd_gpu','telemetry_min','vbs_off','net_power','net_eee','tcp_baseline','explorer_tweaks'):
             self.assertIn(key,pc.OPTIONS)
 
+    def test_interrupted_pending_state_self_heals(self):
+        backend=self.FakeBackend()
+        spec={'kind':'registry','id':'game_auto'}
+        original={'exists':True,'type':4,'value':0}
+        target={'exists':True,'type':4,'value':1}
+        backend.values[repr(spec)]=original
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as local:
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}):
+                state={'schema':2,'identity':backend.identity,'entries':[{
+                    'spec':spec,'original':original,'applied':original,'pending':True,'target':target
+                }]}
+                pc._save_state(pc.optimizer_state_path(root),state)
+                result=pc._apply_changes(root,[(spec,target)],backend)
+                self.assertEqual(result['changed'],1)
+                healed=json.loads(pc.optimizer_state_path(root).read_text(encoding='utf-8'))
+                self.assertFalse(any(e.get('pending') for e in healed['entries']))
+                self.assertEqual(backend.read(spec),target)
+
+    def test_optimizer_state_lives_outside_app_folder(self):
+        with tempfile.TemporaryDirectory() as app, tempfile.TemporaryDirectory() as local:
+            with patch.dict(pc.os.environ,{'LOCALAPPDATA':local}):
+                path=pc.optimizer_state_path(app)
+                self.assertTrue(str(path).startswith(str(Path(local))))
+                self.assertNotEqual(path.parent,Path(app))
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
