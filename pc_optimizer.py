@@ -401,26 +401,167 @@ def _apply_changes(root, changes, backend):
         return {'changed': len(touched), 'backup': str(path)}
 
 
+
+def _active_nic_info():
+    data=_strict_json("""$n=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select-Object -First 1 Name,InterfaceGuid,InterfaceDescription
+if($null -eq $n){$null}else{$n}""")
+    return data if isinstance(data,dict) else {}
+
+def _fortnite_executable():
+    for game in detected_games():
+        if str(game.get('name','')).lower()!='fortnite':continue
+        base=Path(str(game.get('path') or ''))
+        candidates=[
+            base/'FortniteGame'/'Binaries'/'Win64'/'FortniteClient-Win64-Shipping.exe',
+            base/'FortniteClient-Win64-Shipping.exe'
+        ]
+        for path in candidates:
+            if path.exists():return str(path.resolve())
+    return None
+
+def _feature_changes(option, backend):
+    changes=[]
+    def dword(key,value):changes.append(({'kind':'registry','id':key},{'exists':True,'type':4,'value':int(value)}))
+    def string(key,value):changes.append(({'kind':'registry','id':key},{'exists':True,'type':1,'value':str(value)}))
+    if option=='game':
+        dword('game_auto',1);dword('game_allow',1)
+    elif option=='captures':
+        dword('capture',0);dword('dvr',0)
+    elif option=='balanced':
+        changes.append(({'kind':'power'},BALANCED))
+    elif option=='usb':
+        plan=backend.read({'kind':'power'})
+        changes.append(({'kind':'usb','plan':plan},0))
+    elif option=='ads':
+        dword('ads',0)
+    elif option=='suggestions':
+        dword('suggestions',0);dword('suggestions_2',0)
+    elif option=='silent_installs':
+        dword('silent_installs',0)
+    elif option=='tailored':
+        dword('tailored',0)
+    elif option=='error_reporting':
+        dword('wer_disabled',1)
+    elif option=='location':
+        string('location','Deny')
+    elif option=='online_speech':
+        dword('online_speech',0)
+    elif option=='storage_sense_off':
+        dword('storage_sense',0)
+    elif option=='background_apps':
+        dword('background_apps',1)
+    elif option=='widgets_off':
+        dword('widgets',0)
+    elif option=='mouse_accel_off':
+        string('mouse_speed','0');string('mouse_threshold1','0');string('mouse_threshold2','0')
+    elif option=='edge_background_off':
+        dword('edge_boost',0);dword('edge_background',0)
+    elif option=='copilot_off':
+        dword('copilot',1)
+    elif option=='classic_context':
+        string('classic_context','')
+    elif option=='hags_on':
+        dword('hags',2)
+    elif option=='fast_startup_off':
+        dword('fast_startup',0)
+    elif option=='hibernation_off':
+        changes.append(({'kind':'hibernate'},False))
+    elif option=='sysmain_off':
+        changes.append(({'kind':'service','name':'SysMain'},{'StartMode':'Disabled','State':'Stopped'}))
+    elif option in ('net_power','net_eee','nagle_off'):
+        nic=_active_nic_info()
+        name=str(nic.get('Name') or '')
+        if not name:raise RuntimeError('Aucune carte réseau physique active détectée.')
+        if option=='net_power':
+            changes.append(({'kind':'net_power','name':name},{'AllowComputerToTurnOffDevice':'Disabled'}))
+        elif option=='net_eee':
+            spec={'kind':'net_eee','name':name}
+            current=backend.read(spec)
+            rows=current if isinstance(current,list) else ([] if current is None else [current])
+            target=[]
+            for row in rows:
+                values=row.get('ValidDisplayValues') or []
+                if isinstance(values,str):values=[values]
+                chosen=next((v for v in values if str(v).lower() in ('disabled','désactivé','off')),None)
+                if chosen is None:continue
+                target.append({'RegistryKeyword':row.get('RegistryKeyword'),'DisplayValue':chosen,'ValidDisplayValues':values})
+            if not target:raise RuntimeError('Le pilote réseau n’expose aucune option EEE/Green Ethernet désactivable automatiquement.')
+            changes.append((spec,target))
+        else:
+            guid=str(nic.get('InterfaceGuid') or '').strip('{} ')
+            if not guid:raise RuntimeError('GUID de l’interface réseau introuvable.')
+            path=r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{'+guid+'}'
+            changes.append(({'kind':'registry','id':'nagle_tcp','path':path},{'exists':True,'type':4,'value':1}))
+            changes.append(({'kind':'registry','id':'nagle_ack','path':path},{'exists':True,'type':4,'value':1}))
+    elif option=='p2p_off':
+        dword('delivery_p2p',0)
+    elif option=='amd_gpu':
+        # Profil automatique volontairement limité à des réglages Windows réversibles :
+        # pas de clé Adrenalin privée, pas d'OC/UV caché.
+        for sub in ('game','captures','balanced','hags_on'):
+            changes.extend(_feature_changes(sub,backend))
+        exe=_fortnite_executable()
+        if exe:
+            changes.append(({'kind':'registry','id':'fortnite_gpu','name':exe},{'exists':True,'type':1,'value':'GpuPreference=2;'}))
+    else:
+        raise ValueError('Option inconnue : '+str(option))
+    # Déduplique les mêmes specs quand un profil composite les ajoute.
+    unique=[]
+    seen=set()
+    for spec,value in changes:
+        key=json.dumps(spec,sort_keys=True,ensure_ascii=False)
+        if key in seen:continue
+        seen.add(key);unique.append((spec,value))
+    return unique
+
+def option_states(backend=None):
+    backend=backend or WindowsSettings()
+    states={}
+    for option in OPTIONS:
+        try:
+            changes=_feature_changes(option,backend)
+            if not changes:
+                states[option]=None;continue
+            ok=True
+            for spec,target in changes:
+                current=backend.read(spec)
+                if spec.get('kind')=='net_eee':
+                    cur_rows=current if isinstance(current,list) else ([] if current is None else [current])
+                    wanted={str(x.get('RegistryKeyword')):str(x.get('DisplayValue')) for x in target}
+                    actual={str(x.get('RegistryKeyword')):str(x.get('DisplayValue')) for x in cur_rows}
+                    if any(actual.get(k)!=v for k,v in wanted.items()):ok=False;break
+                elif current!=target:
+                    ok=False;break
+            states[option]=ok
+        except Exception as exc:
+            states[option]=None
+    return states
+
 def optimize(root, options=None, backend=None):
-    options = list(options if options is not None else ['game'])
-    if not options or not set(options).issubset(OPTIONS):raise ValueError('Sélectionne au moins un réglage valide.')
-    backend = backend or WindowsSettings()
-    changes = []
-    def dword(key, value):changes.append(({'kind': 'registry', 'id': key}, {'exists': True, 'type': 4, 'value': value}))
-    if 'game' in options:
-        dword('game_auto', 1);dword('game_allow', 1)
-    if 'captures' in options:
-        dword('capture', 0);dword('dvr', 0)
-    if 'ads' in options:dword('ads', 0)
-    if 'suggestions' in options:
-        dword('suggestions', 0);dword('suggestions_2', 0)
-    if 'balanced' in options:changes.append(({'kind': 'power'}, BALANCED))
-    if 'usb' in options:
-        plan = BALANCED if 'balanced' in options else backend.read({'kind': 'power'})
-        changes.append(({'kind': 'usb', 'plan': plan}, 0))
-    result = _apply_changes(root, changes, backend)
-    if not result['changed']:return 'Les réglages sélectionnés ont déjà les valeurs demandées. Aucun changement.'
-    return f"{result['changed']} réglage(s) modifié(s) et vérifié(s).\nSauvegarde initiale conservée : {result['backup']}\nAucun gain de FPS n’est garanti. Teste les mêmes usages avant/après."
+    options=list(options if options is not None else ['game'])
+    if not options or not set(options).issubset(OPTIONS):
+        raise ValueError('Sélectionne au moins un réglage valide.')
+    backend=backend or WindowsSettings()
+    changes=[]
+    for option in options:
+        changes.extend(_feature_changes(option,backend))
+    # Déduplique les specs, la dernière cible identique gagne.
+    merged={}
+    order=[]
+    for spec,value in changes:
+        key=json.dumps(spec,sort_keys=True,ensure_ascii=False)
+        if key not in merged:order.append(key)
+        merged[key]=(spec,value)
+    changes=[merged[k] for k in order]
+    result=_apply_changes(root,changes,backend)
+    if not result['changed']:
+        return 'Les réglages sélectionnés ont déjà les valeurs demandées. Aucun changement.'
+    return (
+        f"{result['changed']} réglage(s) modifié(s) et vérifié(s).\n"
+        f"Sauvegarde initiale conservée : {result['backup']}\n"
+        "Les réglages sont relus depuis Windows au prochain scan, donc l’état reste cohérent après redémarrage.\n"
+        "Aucun gain de FPS n’est garanti : compare avec le benchmark avant/après."
+    )
 
 
 def restore(root, backend=None):
