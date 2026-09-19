@@ -1,3 +1,10 @@
+
+## Acolyte 2.1 — scores séparés et profils par jeu
+- Score global = 45 % santé Windows + 55 % performance gaming mesurable.
+- Sous-scores Santé Windows et Gaming affichés séparément.
+- Premier profil par jeu : Fortnite compétitif max FPS, réversible avec sauvegarde de GameUserSettings.ini.
+- Le profil Fortnite active Game Mode, coupe Game DVR, force le GPU haute performance et applique un preset compétitif sans modifier le renderer, la résolution ni les touches.
+- Le score gaming réserve 20 points au benchmark réel (1 % low, 0,1 % low, stutters) au lieu d'inventer un gain non mesuré.
 # Acolyte Fortnite — 1.0
 
 Coach Fortnite local pour Windows. Le mode principal est maintenant **vocal à la demande** afin d'éviter de monopoliser le GPU pendant la partie.
