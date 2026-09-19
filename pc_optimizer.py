@@ -401,8 +401,13 @@ def _apply_changes(root, changes, backend):
             for spec, value, previous in before:
                 if previous == value:continue
                 entry = next((e for e in state['entries'] if e['spec'] == spec), None)
-                if entry is not None and previous != entry['applied']:
-                    raise RuntimeError('Ce réglage a changé hors d’Acolyte. Restaure d’abord la sauvegarde.')
+                if entry is not None and previous != entry.get('applied'):
+                    # Windows, un pilote ou l’utilisateur a modifié la valeur depuis la dernière
+                    # exécution. On se resynchronise sur la réalité au lieu de bloquer Acolyte.
+                    # La nouvelle valeur devient le nouvel état de référence pour Restaurer.
+                    entry.update(original=previous,applied=previous,pending=False)
+                    entry.pop('target',None)
+                    _save_state(path,state)
                 if entry is None:
                     entry = {'spec': spec, 'original': previous, 'applied': previous}
                     state['entries'].append(entry)
