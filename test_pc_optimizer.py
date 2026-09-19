@@ -578,4 +578,23 @@ class Acolyte25Tests(unittest.TestCase):
             self.assertEqual(fake.read(spec),original)
 
 
+
+class LiveOverlayMetricsTests(unittest.TestCase):
+    def test_live_presentmon_tail_returns_fps_and_low(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'live.csv'
+            lines=['Application,ProcessID,SwapChainAddress,TimeInSeconds,msBetweenPresents']
+            t=0.0
+            for i in range(300):
+                ft=4.0 if i%75 else 12.0
+                t+=ft/1000.0
+                lines.append(f'FortniteClient-Win64-Shipping.exe,123,0x1,{t:.6f},{ft:.3f}')
+            path.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+            metrics=pc.live_game_capture_metrics({'csv_path':str(path),'process':None},window_seconds=2.0)
+            self.assertIsInstance(metrics,dict)
+            self.assertGreater(metrics['fps'],200)
+            self.assertGreater(metrics['one_percent_low'],70)
+            self.assertGreaterEqual(metrics['samples'],30)
+
+
 if __name__=='__main__':unittest.main()
