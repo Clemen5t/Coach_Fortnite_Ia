@@ -1841,7 +1841,7 @@ def run_packaged_system_smoke_test(output_file):
             'score_present':isinstance(scan.get('score'),(int,float)),
             'health_score_present':isinstance(scan.get('health_score'),(int,float)),
             'gaming_score_present':isinstance(scan.get('gaming_score'),(int,float)),
-            'network_snapshot':isinstance(scan.get('network'),dict),
+            'network_snapshot':isinstance(scan.get('network'),dict) and (scan.get('network') or {}).get('status') in ('online','offline'),
             'gaming_audit_cards':isinstance(audit.get('cards'),list) and len(audit.get('cards'))>=5,
             'fortnite_status':isinstance(fortnite,dict) and fortnite.get('game')=='Fortnite',
             'presentmon_status':isinstance(presentmon,dict) and 'installed' in presentmon,
