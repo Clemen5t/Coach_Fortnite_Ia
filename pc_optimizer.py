@@ -1854,18 +1854,27 @@ def analyze():
     return info
 
 def network_snapshot():
-    return _strict_json("""$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select -First 1
+    return _strict_json("""$physical=$true
+$nic=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|Where-Object Status -eq 'Up'|Sort-Object LinkSpeed -Descending|Select-Object -First 1
+if($null -eq $nic){
+ $physical=$false
+ $nic=Get-NetAdapter -ErrorAction SilentlyContinue|Where-Object {$_.Status -eq 'Up' -and $_.Name -notmatch 'Loopback'}|Sort-Object LinkSpeed -Descending|Select-Object -First 1
+}
 if($null -eq $nic){[ordered]@{status='offline'}}else{
- $ip=Get-NetIPConfiguration -InterfaceIndex $nic.ifIndex -ErrorAction SilentlyContinue
- $rss=Get-NetAdapterRss -Name $nic.Name -ErrorAction SilentlyContinue
- $rsc=Get-NetAdapterRsc -Name $nic.Name -ErrorAction SilentlyContinue
- $pm=Get-NetAdapterPowerManagement -Name $nic.Name -ErrorAction SilentlyContinue
+ $ip=$null;$rss=$null;$rsc=$null;$pm=$null
+ try{$ip=Get-NetIPConfiguration -InterfaceIndex $nic.ifIndex -ErrorAction Stop}catch{}
+ try{$rss=Get-NetAdapterRss -Name $nic.Name -ErrorAction Stop}catch{}
+ try{$rsc=Get-NetAdapterRsc -Name $nic.Name -ErrorAction Stop}catch{}
+ try{$pm=Get-NetAdapterPowerManagement -Name $nic.Name -ErrorAction Stop}catch{}
  [ordered]@{
-  status='online';name=$nic.Name;description=$nic.InterfaceDescription;link=$nic.LinkSpeed
-  ipv4=(@($ip.IPv4Address.IPAddress)-join ', ');gateway=(@($ip.IPv4DefaultGateway.NextHop)-join ', ')
-  dns=(@($ip.DNSServer.ServerAddresses)-join ', ')
-  rss=$rss.Enabled;rsc_ipv4=$rsc.IPv4Enabled;rsc_ipv6=$rsc.IPv6Enabled
-  allow_power_off=$pm.AllowComputerToTurnOffDevice
+  status='online';physical=$physical;name=$nic.Name;description=$nic.InterfaceDescription;link=$nic.LinkSpeed
+  ipv4=if($ip){(@($ip.IPv4Address.IPAddress)-join ', ')}else{''}
+  gateway=if($ip){(@($ip.IPv4DefaultGateway.NextHop)-join ', ')}else{''}
+  dns=if($ip){(@($ip.DNSServer.ServerAddresses)-join ', ')}else{''}
+  rss=if($rss){[bool]$rss.Enabled}else{$null}
+  rsc_ipv4=if($rsc){[bool]$rsc.IPv4Enabled}else{$null}
+  rsc_ipv6=if($rsc){[bool]$rsc.IPv6Enabled}else{$null}
+  allow_power_off=if($pm){[string]$pm.AllowComputerToTurnOffDevice}else{$null}
  }}""")
 
 def bios_snapshot():
