@@ -138,14 +138,22 @@ def benchmark():
 
 
 FORTNITE_PING_ENDPOINTS={
-    'Europe':'ping-eu.ds.on.epicgames.com',
-    'NA East':'ping-nae.ds.on.epicgames.com',
-    'NA Central':'ping-nac.ds.on.epicgames.com',
-    'NA West':'ping-naw.ds.on.epicgames.com',
-    'Brazil':'ping-br.ds.on.epicgames.com',
-    'Asia':'ping-asia.ds.on.epicgames.com',
-    'Middle East':'ping-me.ds.on.epicgames.com',
-    'Oceania':'ping-oce.ds.on.epicgames.com',
+    'Europe • France':'ping-fr.ds.on.epicgames.com',
+    'Europe • Germany':'ping-de.ds.on.epicgames.com',
+    'Europe • United Kingdom':'ping-gb.ds.on.epicgames.com',
+    'NA • Virginia':'ping-va.ds.on.epicgames.com',
+    'NA • Ohio':'ping-oh.ds.on.epicgames.com',
+    'NA • Iowa':'ping-ia.ds.on.epicgames.com',
+    'NA • Texas':'ping-tx.ds.on.epicgames.com',
+    'NA • Oregon':'ping-or.ds.on.epicgames.com',
+    'NA • Northern California':'ping-ncal.ds.on.epicgames.com',
+    'NA • Mexico':'ping-mx.ds.on.epicgames.com',
+    'Brazil • São Paulo':'ping-sao.ds.on.epicgames.com',
+    'Asia • Tokyo':'ping-tok.ds.on.epicgames.com',
+    'Oceania • Sydney':'ping-syd.ds.on.epicgames.com',
+    'Middle East • Bahrain':'ping-bah.ds.on.epicgames.com',
+    'Middle East • Mumbai':'ping-mum.ds.on.epicgames.com',
+    'Middle East • Israel':'ping-il.ds.on.epicgames.com',
 }
 
 def fortnite_region_benchmark(samples=8):
