@@ -3402,10 +3402,49 @@ def run_auto_game_profiles(root,games=None):
                 if running and not status.get('applied'):
                     result=apply_generic_game_profile(root,game)
                     actions.append({'game':name,'action':'profile_applied','result':result.get('message')})
+                elif not running and status.get('applied'):
+                    result=restore_generic_game_profile(game)
+                    actions.append({'game':name,'action':'profile_restored','result':result.get('message')})
         except Exception as exc:
             actions.append({'game':name,'action':'error','error':str(exc)})
     if actions:_audit_append('auto_profile','Profils automatiques exécutés',metadata={'actions':actions})
     return {'actions':actions}
+
+def restore_generic_game_profile(game):
+    """Restaure uniquement la préférence GPU posée par le profil générique.
+    Les réglages Windows globaux restent gérés par le journal Acolyte.
+    """
+    game=dict(game or {})
+    state_path=GAME_PROFILE_DIR/('generic-'+_safe_game_key(game)+'.json')
+    state=_read_json_file(state_path,{})
+    if not isinstance(state,dict) or not state.get('applied'):
+        return {'restored':False,'message':'Aucun profil générique actif à restaurer.'}
+    exe=state.get('exe') or game.get('exe')
+    if not exe:
+        raise RuntimeError('Exécutable du profil générique introuvable.')
+    backend=WindowsSettings()
+    spec={'kind':'registry','id':'game_gpu','name':exe}
+    target=state.get('gpu_target')
+    original=state.get('gpu_original')
+    current=backend.read(spec)
+    skipped=False
+    if current==target:
+        backend.write(spec,original)
+        if backend.read(spec)!=original:
+            raise RuntimeError('La préférence GPU n’a pas pu être restaurée.')
+    else:
+        skipped=True
+    state['applied']=False
+    state['restored_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+    _write_json_file(state_path,state)
+    _audit_append('auto_profile',
+        'Profil générique restauré pour '+str(game.get('name') or state.get('game') or 'jeu'),
+        metadata={'game':game.get('name') or state.get('game'),'skipped_gpu':skipped})
+    return {
+        'restored':not skipped,
+        'message':('Préférence GPU du jeu restaurée.' if not skipped else
+                   'La préférence GPU avait été modifiée depuis ; elle n’a pas été écrasée.')
+    }
 
 def last_scan_snapshot():
     data=_read_json_file(LAST_SCAN_FILE,{})
@@ -3413,7 +3452,14 @@ def last_scan_snapshot():
 
 def ai_pc_context():
     scan=last_scan_snapshot()
-    telemetry=hardware_telemetry_snapshot()
+    telemetry=dict(scan.get('telemetry') or {})
+    try:
+        import psutil
+        telemetry['cpu_percent']=float(psutil.cpu_percent(interval=None))
+        mem=psutil.virtual_memory()
+        telemetry['ram_percent']=float(mem.percent)
+        telemetry['ram_used_gb']=round(mem.used/1024**3,2)
+    except Exception:pass
     bench=benchmark_history(1)
     system=(scan.get('system') or {})
     rec=scan.get('recommendations') or []
