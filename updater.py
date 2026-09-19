@@ -322,6 +322,30 @@ def _create_exe_shortcut(target):
         capture_output=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),timeout=30
     )
 
+def _independent_child_environment():
+    """Environnement sûr pour un processus qui doit survivre au onefile courant.
+
+    PyInstaller >= 6.9 traite par défaut un sys.executable relancé comme un worker,
+    et >= 6.22 ajoute une validation du parent onefile. Pour un vrai redémarrage
+    indépendant, le prochain Acolyte doit repartir comme processus top-level.
+    """
+    env={k:v for k,v in os.environ.items() if not str(k).startswith('_PYI_')}
+    env['PYINSTALLER_RESET_ENVIRONMENT']='1'
+    return env
+
+def _start_independent_exe(path):
+    """Lance un EXE via ShellExecute/UAC en forçant un nouvel environnement PyInstaller."""
+    path=Path(path).resolve()
+    previous=os.environ.get('PYINSTALLER_RESET_ENVIRONMENT')
+    try:
+        os.environ['PYINSTALLER_RESET_ENVIRONMENT']='1'
+        os.startfile(str(path))
+    finally:
+        if previous is None:
+            os.environ.pop('PYINSTALLER_RESET_ENVIRONMENT',None)
+        else:
+            os.environ['PYINSTALLER_RESET_ENVIRONMENT']=previous
+
 def _schedule_self_replace(staged,current_exe):
     staged=Path(staged).resolve();current=Path(current_exe).resolve()
     helper=updater_data_dir(current.parent)/('replace-'+uuid.uuid4().hex+'.ps1')
@@ -330,6 +354,12 @@ def _schedule_self_replace(staged,current_exe):
 $pidToWait={pid}
 $src={json.dumps(str(staged))}
 $dst={json.dumps(str(current))}
+# Le helper peut hériter de variables internes PyInstaller du onefile qui vient de se fermer.
+# Elles ne doivent jamais être transmises au nouvel Acolyte.
+Get-ChildItem Env: | Where-Object {{ $_.Name -like '_PYI_*' }} | ForEach-Object {{
+  Remove-Item ("Env:" + $_.Name) -ErrorAction SilentlyContinue
+}}
+$env:PYINSTALLER_RESET_ENVIRONMENT='1'
 try {{ Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue }} catch {{}}
 Start-Sleep -Milliseconds 600
 $ok=$false
@@ -351,7 +381,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
     subprocess.Popen(
         ['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',str(helper)],
         cwd=str(current.parent),
-        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),
+        env=_independent_child_environment()
     )
 
 def install_exe_release(update,root,current_exe=None):
@@ -371,7 +402,7 @@ def install_exe_release(update,root,current_exe=None):
     try:staged.unlink()
     except OSError:pass
     if os.name=='nt':
-        os.startfile(str(target))
+        _start_independent_exe(target)
     return {'version':update['version'],'target':str(target),'mode':'transition'}
 
 if __name__=='__main__':
