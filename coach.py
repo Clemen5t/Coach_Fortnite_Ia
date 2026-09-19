@@ -730,13 +730,14 @@ class PCPremiumUI:
         for row in reversed(rows):
             if shown>=30:break
             kind=row.get('kind')
-            if kind not in ('setting_change','checkpoint','rollback','auto_profile'):continue
+            if kind not in ('setting_change','checkpoint','rollback','auto_profile','profile_change','operation'):continue
             shown+=1
             restored=bool(row.get('restored_at'))
             desc=f"{row.get('timestamp','')} • {row.get('summary','')}"
             if kind=='setting_change':
                 spec=row.get('spec') or {}
                 desc+=f"\nRéglage : {spec.get('id') or spec.get('name') or spec.get('kind')}"
+                desc+=f"\nAvant : {row.get('before')}\nAprès : {row.get('after')}"
             if restored:desc+=f"\nRestauré : {row.get('restored_at')}"
             command=None if restored or kind!='setting_change' else (lambda eid=row.get('id'):self.restore_history_event(eid))
             self._action_card(kind.upper(),desc,'Restauré' if restored else 'Actif','Traçabilité','Faible',command=command,button='RESTAURER')
