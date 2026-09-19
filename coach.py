@@ -1024,11 +1024,25 @@ class PCPremiumUI:
     def _game_benchmark_done(self,result):
         self._restore_bench_window()
         if result.get('label')=='AVANT optimisation':self.game_phase_var.set('APRÈS optimisation')
-        self._show_result('Benchmark Fortnite',self._format_game_result(result))
+        policy={}
+        try:
+            if str(result.get('label') or '').casefold().startswith('après'):
+                policy=pc_optimizer.evaluate_latest_benchmark_policy()
+        except Exception as exc:
+            self.log('[WARN] Évaluation benchmark : '+str(exc))
+        text=self._format_game_result(result)
+        comparison=(policy.get('comparison') or {}) if isinstance(policy,dict) else {}
+        if comparison.get('verdict'):
+            text+='\n\nVerdict AVANT / APRÈS : '+str(comparison.get('verdict'))
+        if policy.get('rollback_scheduled'):
+            text+='\nRollback automatique programmé : ferme Fortnite pour permettre une restauration sûre.'
+        self._show_result('Benchmark Fortnite',text)
         self.show('games')
         warnings=result.get('capture_warnings') or []
         extra=('\n\n⚠ '+warnings[0]) if warnings else ''
-        messagebox.showinfo('Benchmark terminé',f"FPS moyen : {result.get('avg_fps',0):.1f}\n1% low : {result.get('one_percent_low',0):.1f}\n0,1% low : {result.get('point_one_percent_low',0):.1f}\nFrametime moyen : {result.get('avg_frametime_ms',0):.2f} ms"+extra)
+        verdict=('\nVerdict : '+str(comparison.get('verdict'))) if comparison.get('verdict') else ''
+        rollback='\nRollback auto : programmé après fermeture de Fortnite.' if policy.get('rollback_scheduled') else ''
+        messagebox.showinfo('Benchmark terminé',f"FPS moyen : {result.get('avg_fps',0):.1f}\n1% low : {result.get('one_percent_low',0):.1f}\n0,1% low : {result.get('point_one_percent_low',0):.1f}\nFrametime moyen : {result.get('avg_frametime_ms',0):.2f} ms"+verdict+rollback+extra)
 
     def _format_game_result(self,r):
         return (
@@ -1425,6 +1439,7 @@ class PCPremiumUI:
         if not opts:return messagebox.showinfo('Acolyte Performance','Sélectionne au moins un réglage.')
         details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
         if not messagebox.askyesno('Appliquer la sélection',details+'\n\nUne sauvegarde durable est créée avant modification. Continuer ?'):return
+        pc_optimizer.create_optimization_checkpoint('Application des réglages')
         self._run('Application des réglages',lambda:pc_optimizer.apply_selected(opts,self.app_dir),lambda x:self._after_mutation('Optimisation',x))
 
     def complete_gaming_tune(self):
@@ -1434,6 +1449,7 @@ class PCPremiumUI:
             'Acolyte va appliquer les réglages gaming réversibles adaptés à ton matériel, régler la fréquence écran maximale détectée puis faire un test réseau avant/après.\n\n'
             'Aucun overclock CPU/GPU/RAM, aucun tweak HPET/timer, aucune suppression de Defender ou de services critiques.\n\nContinuer ?'
         ):return
+        pc_optimizer.create_optimization_checkpoint('Auto-tune PC complet')
         self._run('Auto-tune PC complet',lambda:pc_optimizer.apply_complete_gaming_profile(self.app_dir),self._complete_gaming_done)
 
     def _complete_gaming_done(self,result):
@@ -1495,6 +1511,7 @@ class PCPremiumUI:
             '\n\nLes tweaks variables (HAGS, Nagle, RSC/Interrupt Moderation, VBS, HYPR-RX/AFMF, overclock) restent séparés et ne sont pas forcés.'
         )
         if not messagebox.askyesno('Pack compétitif',msg):return
+        pc_optimizer.create_optimization_checkpoint('Pack compétitif')
         self._run('Pack compétitif',lambda:pc_optimizer.apply_competitive_pack(self.app_dir,self.last_scan),self._competitive_pack_done)
 
     def _competitive_pack_done(self,result):
@@ -1512,6 +1529,7 @@ class PCPremiumUI:
         if not opts:return messagebox.showinfo('Optimisation intelligente','Les réglages sûrs suivis par Acolyte sont déjà dans l’état recommandé.')
         details='\n'.join('• '+pc_optimizer.OPTIONS[k][0] for k in opts)
         if not messagebox.askyesno('Optimisation intelligente','Acolyte recommande :\n\n'+details+'\n\nAucun tweak réseau agressif, BIOS, overclock ou sécurité ne sera appliqué. Continuer ?'):return
+        pc_optimizer.create_optimization_checkpoint('Optimisation intelligente')
         self._run('Optimisation intelligente',lambda:pc_optimizer.apply_batch(self.app_dir,opts,[]),lambda x:self._after_mutation('Optimisation intelligente',x))
 
     def _after_mutation(self,title,result):
@@ -1677,20 +1695,56 @@ class PCPremiumUI:
     def _short_gpu(self,name):
         return str(name).replace('AMD ','').replace('NVIDIA ','')[:28]
 
+    def _automation_tick(self):
+        if self._automation_worker:return
+        self._automation_worker=True
+        games=list(((self.last_scan or {}).get('games') or []))
+        def work():
+            messages=[]
+            try:
+                profiles=pc_optimizer.run_auto_game_profiles(self.app_dir,games)
+                for item in profiles.get('actions') or []:
+                    if item.get('action')!='error':
+                        messages.append(f"Profil auto {item.get('game')}: {item.get('result') or item.get('action')}")
+                    else:
+                        messages.append(f"Profil auto {item.get('game')}: {item.get('error')}")
+            except Exception as exc:
+                messages.append('Profils auto : '+str(exc))
+            try:
+                rollback=pc_optimizer.process_pending_regression_rollback(self.app_dir)
+                if rollback.get('reason') and not rollback.get('waiting_for_game_exit'):
+                    messages.append('Rollback benchmark exécuté : '+str(rollback.get('reason')))
+            except Exception as exc:
+                messages.append('Rollback : '+str(exc))
+            def done():
+                self._automation_worker=False
+                for msg in messages:self.log(msg)
+                if messages and self.current in ('games','history'):
+                    try:self.show(self.current)
+                    except Exception:pass
+            try:self.parent.after(0,done)
+            except Exception:self._automation_worker=False
+        threading.Thread(target=work,daemon=True).start()
+
     def _tick_live(self):
         try:
             if self.game_benchmark_active:
                 self.parent.after(1000,self._tick_live);return
+            now=time.time()
             if psutil is not None:
                 cpu=psutil.cpu_percent(interval=None);mem=psutil.virtual_memory()
                 self.kpis['cpu'][1].configure(text=f'Charge {cpu:.0f}%')
                 self.kpis['ram'][1].configure(text=f'Utilisée {mem.used/1024**3:.1f} Go • {mem.percent:.0f}%')
-                io=psutil.net_io_counters();now=time.time()
+                io=psutil.net_io_counters()
                 if self._last_net:
                     t,r,s=self._last_net;dt=max(.1,now-t)
                     down=(io.bytes_recv-r)*8/dt/1e6;up=(io.bytes_sent-s)*8/dt/1e6
                     self.kpis['net'][1].configure(text=f'↓ {down:.2f} Mb/s  ↑ {up:.2f} Mb/s')
                 self._last_net=(now,io.bytes_recv,io.bytes_sent)
+            self._update_overlay()
+            if not self.busy and now-self._last_auto_profile_check>=5:
+                self._last_auto_profile_check=now
+                self._automation_tick()
         except Exception:pass
         try:self.parent.after(1000,self._tick_live)
         except Exception:pass
@@ -1988,6 +2042,10 @@ class Coach:
                 if not q:self.emit(sid,'voice_error','Aucune phrase détectée. Vérifie le spectre et le micro choisi.'); return
                 self.emit(sid,'question',q)
                 hist='\n'.join(f'Joueur: {x}\nAcolyte: {y}' for x,y in self.history[-4:])
+                try:
+                    if pc_optimizer is not None:
+                        hist+=(('\n' if hist else '')+pc_optimizer.ai_pc_context())
+                except Exception:pass
                 ai=LocalAI(self.voice_stop); ai.verify(); image=None
                 if needs_vision(q):
                     self.emit(sid,'voice_status','👁 Analyse de l’écran…')
