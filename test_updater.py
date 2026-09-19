@@ -38,7 +38,7 @@ class Tests(unittest.TestCase):
             files,version=updater.unpack(archive())
             updater.apply(root,{'repo':'name/coach','sha':'a'*40,'version':version,'files':files})
             self.assertEqual((root/'settings.json').read_text(),'original settings');self.assertTrue((root/'.venv').is_dir())
-            self.assertFalse((root/'.updates/pending.json').exists())
+            self.assertFalse(updater.updater_pending_file(root).exists())
     def test_rollback(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);(root/'coach.py').write_text('old code')
@@ -53,14 +53,21 @@ class Tests(unittest.TestCase):
             self.assertFalse((root/'VERSION').exists())
     def test_interrupted_recovery(self):
         with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder);backup=root/'.updates'/'backup-abc';backup.mkdir(parents=True)
+            root=Path(folder);state=updater.updater_data_dir(root);backup=state/'backup-abc';backup.mkdir(parents=True)
             (backup/'coach.py').write_text('old');(root/'coach.py').write_text('partial new')
-            updater.write_json(root/'.updates/pending.json',{'backup':'backup-abc','old':{'coach.py':True}})
+            updater.write_json(updater.updater_pending_file(root),{'backup':'backup-abc','old':{'coach.py':True}})
             self.assertTrue(updater.recover(root));self.assertEqual((root/'coach.py').read_text(),'old')
             self.assertFalse(updater.recover(root))
+    def test_state_is_outside_app_folder(self):
+        with tempfile.TemporaryDirectory() as app, tempfile.TemporaryDirectory() as local:
+            with patch.dict(updater.os.environ,{'LOCALAPPDATA':local}):
+                state=updater.updater_state_file(app)
+                self.assertTrue(str(state).startswith(str(Path(local))))
+                self.assertNotEqual(state.parent,Path(app))
+
     def test_current(self):
         with tempfile.TemporaryDirectory() as folder:
-            updater.write_json(Path(folder)/'.update-state.json',{'repo':'name/coach','sha':'b'*40})
+            updater.write_json(updater.updater_state_file(folder),{'repo':'name/coach','sha':'b'*40})
             self.assertIsNone(updater.plan(folder,'name/coach','main',lambda u:json.dumps({'sha':'b'*40}).encode()))
 
 if __name__=='__main__':unittest.main()
