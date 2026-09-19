@@ -1287,6 +1287,287 @@ def detected_games():
             games.append({'launcher':'Détection locale','name':name,'path':str(path)})
     return games
 
+
+# === PROFILS D'OPTIMISATION PAR JEU ===
+GAME_PROFILE_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()/'AppData'/'Local'))) / 'AcolyteFortnite' / 'GameProfiles'
+FORTNITE_PROFILE_FILE = GAME_PROFILE_DIR / 'fortnite-profile.json'
+
+def _fortnite_config_path():
+    local=Path(os.environ.get('LOCALAPPDATA', str(Path.home()/'AppData'/'Local')))
+    candidates=[
+        local/'FortniteGame'/'Saved'/'Config'/'WindowsClient'/'GameUserSettings.ini',
+        local/'FortniteGame'/'Saved'/'Config'/'Windows'/'GameUserSettings.ini',
+    ]
+    return next((p for p in candidates if p.exists()),candidates[0])
+
+def _read_ini_values(path):
+    path=Path(path)
+    result={}
+    if not path.exists():return result
+    section=''
+    try:text=path.read_text(encoding='utf-8-sig',errors='replace')
+    except OSError:return result
+    for raw in text.splitlines():
+        line=raw.strip()
+        if not line or line.startswith((';','#')):continue
+        if line.startswith('[') and line.endswith(']'):
+            section=line[1:-1].strip();continue
+        if '=' not in line:continue
+        key,value=line.split('=',1)
+        result[(section,key.strip().casefold())]=value.strip()
+    return result
+
+FORTNITE_COMPETITIVE_SETTINGS={
+    '/Script/FortniteGame.FortGameUserSettings':{
+        'bUseVSync':'False',
+        'bMotionBlur':'False',
+        'bUseDynamicResolution':'False',
+        'FrameRateLimit':'0.000000',
+    },
+    'ScalabilityGroups':{
+        'sg.ViewDistanceQuality':'0',
+        'sg.AntiAliasingQuality':'0',
+        'sg.ShadowQuality':'0',
+        'sg.GlobalIlluminationQuality':'0',
+        'sg.ReflectionQuality':'0',
+        'sg.PostProcessQuality':'0',
+        'sg.TextureQuality':'0',
+        'sg.EffectsQuality':'0',
+        'sg.FoliageQuality':'0',
+        'sg.ShadingQuality':'0',
+    },
+}
+
+def _patch_ini_text(text,settings):
+    lines=text.splitlines()
+    newline='\r\n' if '\r\n' in text else '\n'
+    section_positions={}
+    current=''
+    key_positions={}
+    for idx,raw in enumerate(lines):
+        stripped=raw.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            current=stripped[1:-1].strip()
+            section_positions[current]=idx
+            continue
+        if '=' in stripped and current:
+            key=stripped.split('=',1)[0].strip().casefold()
+            key_positions[(current,key)]=idx
+
+    for section,values in settings.items():
+        if section not in section_positions:
+            if lines and lines[-1].strip():lines.append('')
+            lines.append('['+section+']')
+            section_positions[section]=len(lines)-1
+        for key,value in values.items():
+            pair=(section,key.casefold())
+            if pair in key_positions:
+                lines[key_positions[pair]]=key+'='+value
+            else:
+                # Insère juste avant la section suivante si possible, sinon à la fin.
+                start=section_positions[section]
+                insert_at=len(lines)
+                for j in range(start+1,len(lines)):
+                    st=lines[j].strip()
+                    if st.startswith('[') and st.endswith(']'):
+                        insert_at=j;break
+                lines.insert(insert_at,key+'='+value)
+                # Recalcule les index car l'insertion décale les lignes.
+                return _patch_ini_text(newline.join(lines)+newline,settings)
+    return newline.join(lines)+(newline if text.endswith(('\n','\r')) or lines else '')
+
+def _fortnite_profile_targets(exe):
+    return [
+        ({'kind':'registry','id':'game_auto'},{'exists':True,'type':4,'value':1}),
+        ({'kind':'registry','id':'game_allow'},{'exists':True,'type':4,'value':1}),
+        ({'kind':'registry','id':'capture'},{'exists':True,'type':4,'value':0}),
+        ({'kind':'registry','id':'dvr'},{'exists':True,'type':4,'value':0}),
+        ({'kind':'registry','id':'fortnite_gpu','name':exe},{'exists':True,'type':1,'value':'GpuPreference=2;'}),
+    ]
+
+def _hash_file(path):
+    path=Path(path)
+    if not path.exists():return None
+    h=hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+    return h.hexdigest()
+
+def _fortnite_config_match(path):
+    values=_read_ini_values(path)
+    total=0;matched=0;details={}
+    for section,rows in FORTNITE_COMPETITIVE_SETTINGS.items():
+        for key,wanted in rows.items():
+            total+=1
+            actual=values.get((section,key.casefold()))
+            ok=(str(actual).casefold()==str(wanted).casefold())
+            matched+=1 if ok else 0
+            details[key]={'ok':ok,'actual':actual,'wanted':wanted}
+    return matched,total,details
+
+def fortnite_profile_status():
+    exe=_fortnite_executable()
+    cfg=_fortnite_config_path()
+    installed=bool(exe)
+    running=game_process_running().get('running',False)
+    backend=None
+    reg_ok=0;reg_total=0;registry={}
+    if installed and os.name=='nt':
+        try:
+            backend=WindowsSettings()
+            for spec,target in _fortnite_profile_targets(exe):
+                reg_total+=1
+                current=backend.read(spec);ok=(current==target)
+                reg_ok+=1 if ok else 0
+                registry[str(spec.get('id'))]={'ok':ok,'current':current,'target':target}
+        except Exception as exc:
+            registry['error']=str(exc)
+    cfg_match,cfg_total,cfg_details=_fortnite_config_match(cfg)
+    state=read_json= None
+    try:
+        state=json.loads(FORTNITE_PROFILE_FILE.read_text(encoding='utf-8')) if FORTNITE_PROFILE_FILE.exists() else {}
+    except Exception:state={}
+    score=0
+    if installed:score+=10
+    if reg_total:score+=round(35*(reg_ok/reg_total))
+    if cfg_total and cfg.exists():score+=round(40*(cfg_match/cfg_total))
+    history=benchmark_history(1) if 'benchmark_history' in globals() else []
+    measured=False
+    if history:
+        measured=True
+        last=history[-1]
+        avg=float(last.get('avg_fps') or 0);low=float(last.get('one_percent_low') or 0);low01=float(last.get('point_one_percent_low') or 0)
+        duration=max(1.0,float(last.get('duration_seconds') or 60))
+        stutters=float(last.get('stutters_33ms') or 0)*60.0/duration
+        stability=(low/avg) if avg else 0
+        tail=(low01/avg) if avg else 0
+        bench_points=0
+        bench_points+=6 if stability>=0.70 else 4 if stability>=0.55 else 2 if stability>=0.40 else 0
+        bench_points+=4 if tail>=0.50 else 3 if tail>=0.35 else 1 if tail>=0.20 else 0
+        bench_points+=5 if stutters<=1 else 3 if stutters<=5 else 1 if stutters<=10 else 0
+        score+=bench_points
+    return {
+        'game':'Fortnite','supported':True,'installed':installed,'running':running,
+        'exe':exe,'config_path':str(cfg),'config_exists':cfg.exists(),
+        'registry_ok':reg_ok,'registry_total':reg_total,'registry':registry,
+        'config_ok':cfg_match,'config_total':cfg_total,'config_details':cfg_details,
+        'profile_applied':bool(state.get('applied')),
+        'applied_at':state.get('applied_at'),'score':max(0,min(100,int(score))),
+        'benchmark_measured':measured
+    }
+
+def apply_fortnite_profile(root):
+    if os.name!='nt':raise RuntimeError('Profil Fortnite disponible uniquement sous Windows.')
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant d’appliquer son profil afin de ne pas écraser un fichier de configuration en cours d’utilisation.')
+    exe=_fortnite_executable()
+    if not exe:raise RuntimeError('Fortnite n’est pas détecté. Lance Epic Games Launcher et vérifie que le jeu est installé.')
+    cfg=_fortnite_config_path()
+    if not cfg.exists():
+        raise RuntimeError('GameUserSettings.ini est introuvable. Lance Fortnite une première fois, ferme-le puis réessaie.')
+
+    GAME_PROFILE_DIR.mkdir(parents=True,exist_ok=True)
+    backend=WindowsSettings()
+    current_state={}
+    try:
+        if FORTNITE_PROFILE_FILE.exists():
+            current_state=json.loads(FORTNITE_PROFILE_FILE.read_text(encoding='utf-8'))
+    except Exception:current_state={}
+
+    backup=GAME_PROFILE_DIR/'Fortnite-GameUserSettings.backup.ini'
+    if not current_state.get('applied') or not backup.exists():
+        shutil.copy2(cfg,backup)
+
+    registry_backup=current_state.get('registry_backup')
+    if not registry_backup:
+        registry_backup=[]
+        for spec,target in _fortnite_profile_targets(exe):
+            registry_backup.append({'spec':spec,'original':backend.read(spec),'target':target})
+
+    original_text=cfg.read_text(encoding='utf-8-sig',errors='replace')
+    patched=_patch_ini_text(original_text,FORTNITE_COMPETITIVE_SETTINGS)
+    temp=cfg.with_suffix('.acolyte.tmp')
+    touched=[]
+    try:
+        for row in registry_backup:
+            spec=row['spec'];target=row['target']
+            previous=backend.read(spec)
+            if previous!=target:
+                backend.write(spec,target);touched.append((spec,previous))
+        temp.write_text(patched,encoding='utf-8')
+        os.replace(temp,cfg)
+    except Exception:
+        for spec,previous in reversed(touched):
+            try:backend.write(spec,previous)
+            except Exception:pass
+        try:
+            if temp.exists():temp.unlink()
+        except OSError:pass
+        raise
+
+    state={
+        'schema':1,'game':'Fortnite','applied':True,
+        'applied_at':time.strftime('%Y-%m-%d %H:%M:%S'),
+        'config_path':str(cfg),'backup_path':str(backup),
+        'applied_hash':_hash_file(cfg),'registry_backup':registry_backup,
+        'profile':'competitive-max-fps-v1'
+    }
+    tmp=FORTNITE_PROFILE_FILE.with_suffix('.tmp')
+    tmp.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8')
+    os.replace(tmp,FORTNITE_PROFILE_FILE)
+    status=fortnite_profile_status()
+    return {
+        'message':'Profil Fortnite compétitif appliqué.',
+        'changes':[
+            'Mode Jeu Windows activé','Captures Game DVR désactivées',
+            'Fortnite forcé sur le GPU haute performance',
+            'V-Sync, Motion Blur et résolution dynamique désactivés',
+            'Qualité Scalability réglée au minimum pour viser les FPS/latence'
+        ],
+        'status':status,'backup':str(backup)
+    }
+
+def restore_fortnite_profile(root):
+    if game_process_running().get('running'):
+        raise RuntimeError('Ferme Fortnite avant de restaurer son profil.')
+    if not FORTNITE_PROFILE_FILE.exists():
+        return {'message':'Aucune sauvegarde de profil Fortnite à restaurer.','restored':False}
+    state=json.loads(FORTNITE_PROFILE_FILE.read_text(encoding='utf-8'))
+    cfg=Path(state.get('config_path') or _fortnite_config_path())
+    backup=Path(state.get('backup_path') or '')
+    if not backup.exists():raise RuntimeError('Sauvegarde Fortnite introuvable.')
+
+    # Si l'utilisateur a modifié Fortnite après le profil, garde une copie avant restauration.
+    current_hash=_hash_file(cfg)
+    applied_hash=state.get('applied_hash')
+    preserved=None
+    if cfg.exists() and current_hash and applied_hash and current_hash!=applied_hash:
+        preserved=GAME_PROFILE_DIR/('Fortnite-pre-restore-'+time.strftime('%Y%m%d-%H%M%S')+'.ini')
+        shutil.copy2(cfg,preserved)
+
+    shutil.copy2(backup,cfg)
+    backend=WindowsSettings()
+    skipped=[]
+    for row in reversed(state.get('registry_backup') or []):
+        spec=row.get('spec');original=row.get('original');target=row.get('target')
+        if not spec:continue
+        try:
+            current=backend.read(spec)
+            # Ne restaure que si le réglage est toujours celui posé par ce profil.
+            if current==target:backend.write(spec,original)
+            else:skipped.append(str(spec.get('id') or spec.get('kind')))
+        except Exception as exc:
+            skipped.append(str(spec.get('id') or spec.get('kind'))+': '+str(exc))
+    state['applied']=False;state['restored_at']=time.strftime('%Y-%m-%d %H:%M:%S')
+    tmp=FORTNITE_PROFILE_FILE.with_suffix('.tmp')
+    tmp.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8')
+    os.replace(tmp,FORTNITE_PROFILE_FILE)
+    return {
+        'message':'Profil Fortnite restauré.',
+        'restored':True,'preserved_current':str(preserved) if preserved else None,
+        'skipped_registry':skipped
+    }
+
 def bios_diagnostics():
     data=_strict_json("""$ram=@(Get-CimInstance Win32_PhysicalMemory|Select Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed)
 $fw='Inconnu'
