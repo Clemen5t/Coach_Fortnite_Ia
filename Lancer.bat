@@ -49,7 +49,6 @@ if errorlevel 1 (
 )
 
 :dependencies
-call :repair_local_files
 ".venv\Scripts\python.exe" updater.py --recover
 if errorlevel 1 (
   echo Restauration impossible. Ne supprime pas le dossier .updates.
@@ -60,12 +59,28 @@ if errorlevel 1 (
   echo Installation des dependances impossible. Verifie la connexion Internet.
   goto end
 )
-if "%SILENT%"=="0" call :ensure_shortcut
+rem Repare les attributs/ACL principaux avant de lancer l'application.
+for %%F in (coach.py pc_optimizer.py local_ai.py updater.py requirements.txt) do (
+  if exist "%%F" (
+    attrib -R -S -H "%%F" >nul 2>&1
+    powershell.exe -NoProfile -Command "try { Unblock-File -LiteralPath '%%~fF' -ErrorAction SilentlyContinue } catch {}" >nul 2>&1
+    icacls "%%F" /reset /c >nul 2>&1
+  )
+)
+
+if "%SILENT%"=="0" (
 rem Raccourci sans VBS et sans CMD : pythonw lance directement l'interface.
 if exist "%~dp0CoachFortnite.vbs" del /q "%~dp0CoachFortnite.vbs" >nul 2>&1
 powershell.exe -NoProfile -Command "$ErrorActionPreference='Stop';$app=($env:COACH_DIR).TrimEnd('\');$pyw=Join-Path $app '.venv\Scripts\pythonw.exe';$coach=Join-Path $app 'coach.py';if(!(Test-Path $pyw)){throw 'pythonw.exe introuvable'};if(!(Test-Path $coach)){throw 'coach.py introuvable'};$ico=Join-Path $app 'CoachFortnite.ico';if(!(Test-Path $ico)){Add-Type -AssemblyName System.Drawing;$bmp=[System.Drawing.Bitmap]::new(64,64);$g=[System.Drawing.Graphics]::FromImage($bmp);$g.Clear([System.Drawing.Color]::FromArgb(16,24,39));$font=[System.Drawing.Font]::new('Segoe UI',24,[System.Drawing.FontStyle]::Bold,[System.Drawing.GraphicsUnit]::Pixel);$brush=[System.Drawing.SolidBrush]::new([System.Drawing.Color]::White);$g.DrawString('CF',$font,$brush,4,15);$h=$bmp.GetHicon();$icon=[System.Drawing.Icon]::FromHandle($h);$fs=[System.IO.File]::Open($ico,[System.IO.FileMode]::Create);$icon.Save($fs);$fs.Dispose();$brush.Dispose();$font.Dispose();$g.Dispose();$bmp.Dispose()};$desk=[Environment]::GetFolderPath('Desktop');$ws=New-Object -ComObject WScript.Shell;$lnk=Join-Path $desk 'Coach Fortnite.lnk';$shortcut=$ws.CreateShortcut($lnk);$shortcut.TargetPath=$pyw;$shortcut.Arguments=([char]34)+$coach+([char]34);$shortcut.WorkingDirectory=$app;$shortcut.IconLocation=$ico+',0';$shortcut.Description='Acolyte Fortnite - IA locale';$shortcut.Save()" >nul 2>&1
 if errorlevel 1 echo Attention : impossible de recreer le raccourci du Bureau.
-exit /b
+)
+
+".venv\Scripts\python.exe" coach.py
+if errorlevel 1 (
+  echo.
+  echo ERREUR : Acolyte n'a pas pu demarrer. Le code erreur est %ERRORLEVEL%.
+)
+goto end
 
 :end
 if "%SILENT%"=="0" pause
