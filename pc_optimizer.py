@@ -564,6 +564,34 @@ def optimize(root, options=None, backend=None):
     )
 
 
+def restore_feature(root, option, backend=None):
+    """Restaure uniquement les réglages que cette fonctionnalité a modifiés.
+    Si la fonctionnalité était déjà active avant Acolyte, aucune origine fiable n'existe :
+    on ne devine pas une valeur de désactivation.
+    """
+    if option not in OPTIONS:raise ValueError('Fonctionnalité inconnue.')
+    backend=backend or WindowsSettings()
+    specs=[spec for spec,_ in _feature_changes(option,backend)]
+    path=Path(root)/JOURNAL_NAME
+    with _exclusive(root):
+        state=_load_state(root,backend)
+        matches=[e for e in state['entries'] if any(e.get('spec')==spec for spec in specs)]
+        if not matches:
+            return "Cette fonctionnalité n’a pas de sauvegarde Acolyte à restaurer. Elle était probablement déjà configurée ainsi avant Acolyte ; aucun état antérieur n’est inventé."
+        errors=[]
+        restored=0
+        for entry in reversed(matches):
+            try:
+                backend.write(entry['spec'],entry['original'])
+                state['entries'].remove(entry);restored+=1
+                _save_state(path,state)
+            except Exception as exc:errors.append(str(exc))
+        if errors:raise RuntimeError('Restauration partielle de la fonctionnalité : '+'; '.join(errors))
+        if not state['entries'] and path.exists():
+            archive=Path(root)/('pc-optimizer-restored-'+uuid.uuid4().hex+'.json')
+            os.replace(path,archive)
+        return f'{restored} réglage(s) restauré(s) pour {OPTIONS[option][0]}.'
+
 def restore(root, backend=None):
     backend = backend or WindowsSettings()
     with _exclusive(root):
