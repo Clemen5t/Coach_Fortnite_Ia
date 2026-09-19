@@ -217,10 +217,12 @@ class ScoreRing(tk.Canvas):
 
 class PCPremiumUI:
     NAV=[
-        ('dashboard','⌂','Tableau de bord'),('performance','⚡','Performances'),('network','↔','Réseau'),
-        ('gpu','◈','Carte graphique'),('privacy','◉','Confidentialité'),('comfort','✦','Confort'),('startup','↗','Démarrage'),
+        ('dashboard','⌂','Tableau de bord'),('analysis','✦','Analyse complète'),('monitoring','◫','Monitoring'),
+        ('performance','⚡','Performances'),('network','↔','Réseau'),('gpu','◈','Carte graphique'),
+        ('privacy','◉','Confidentialité'),('comfort','✦','Confort'),('startup','↗','Démarrage'),
         ('games','🎮','Jeux'),('checkup','✓','Check-up'),('bios','◆','BIOS / RAM'),
-        ('apps','▦','Logiciels'),('research','⌕','Méthode'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
+        ('history','↶','Historique'),('apps','▦','Logiciels'),('research','⌕','Méthode'),
+        ('updates','↻','Mises à jour'),('usb','⌁','USB')]
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
         try:self.persistent_feature_desired=pc_optimizer.desired_features(self.app_dir)
@@ -228,7 +230,9 @@ class PCPremiumUI:
         self.option_vars={k:tk.BooleanVar(value=bool(self.persistent_feature_desired.get(k))) for k in pc_optimizer.OPTIONS}
         self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={};self.feature_actual_states={};self.pending_feature_keys=set()
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
+        self.auto_rollback_var=tk.BooleanVar(value=bool(pc_optimizer.auto_rollback_enabled()))
         self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
+        self.overlay_window=None;self.overlay_label=None;self._last_auto_profile_check=0.0;self._automation_worker=False
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
@@ -250,14 +254,16 @@ class PCPremiumUI:
         ctk.CTkLabel(brand,text='ACOLYTE',text_color=COLORS['text'],font=ctk.CTkFont(size=27,weight='bold')).pack(anchor='w')
         ctk.CTkLabel(brand,text='PERFORMANCE',text_color=COLORS['cyan'],font=ctk.CTkFont(size=16,weight='bold')).pack(anchor='w')
         ctk.CTkLabel(brand,text='Analyse • Optimise • Mesure',text_color=COLORS['muted'],font=ctk.CTkFont(size=10)).pack(anchor='w',pady=(3,8))
-        ctk.CTkFrame(side,height=2,fg_color=COLORS['cyan']).pack(fill='x',padx=16,pady=(0,10))
+        ctk.CTkFrame(side,height=2,fg_color=COLORS['cyan']).pack(fill='x',padx=16,pady=(0,6))
+        nav_host=ctk.CTkScrollableFrame(side,fg_color='transparent',corner_radius=0,scrollbar_button_color='#24395D')
+        nav_host.pack(fill='both',expand=True,padx=2,pady=(0,4))
         for key,icon,label in self.NAV:
-            b=ctk.CTkButton(side,text=f'{icon}  {label}',anchor='w',height=42,corner_radius=11,
+            b=ctk.CTkButton(nav_host,text=f'{icon}  {label}',anchor='w',height=39,corner_radius=10,
                 fg_color='transparent',hover_color=COLORS['panel2'],text_color=COLORS['text'],
-                font=ctk.CTkFont(size=13,weight='bold'),command=lambda k=key:self.show(k))
-            b.pack(fill='x',padx=10,pady=2);self.nav_buttons[key]=b
+                font=ctk.CTkFont(size=12,weight='bold'),command=lambda k=key:self.show(k))
+            b.pack(fill='x',padx=7,pady=2);self.nav_buttons[key]=b
         self.admin_badge=ctk.CTkLabel(side,text='● ADMIN : ...',text_color=COLORS['muted'],font=ctk.CTkFont(size=10,weight='bold'))
-        self.admin_badge.pack(side='bottom',anchor='w',padx=16,pady=14)
+        self.admin_badge.pack(side='bottom',anchor='w',padx=16,pady=(4,12))
 
     def _build_topbar(self):
         top=ctk.CTkFrame(self.root,fg_color='transparent')
@@ -335,6 +341,8 @@ class PCPremiumUI:
         self.gaming_score_label=ctk.CTkLabel(scores,text='Gaming —/100',text_color=COLORS['purple2'],font=ctk.CTkFont(size=10,weight='bold'))
         self.gaming_score_label.pack(side='right',expand=True)
         ctk.CTkLabel(side,text='45 % santé Windows • 55 % performance gaming mesurable',text_color=COLORS['muted'],font=ctk.CTkFont(size=8),wraplength=250).pack(pady=(2,0))
+        ctk.CTkButton(side,text='POURQUOI CE SCORE ?',command=self.show_score_explanation,height=28,width=160,
+            corner_radius=8,fg_color=COLORS['panel2'],hover_color='#203354').pack(pady=(6,0))
         self.scan_progress=ctk.CTkProgressBar(side,height=8,corner_radius=999,progress_color=COLORS['cyan2'],fg_color='#263758')
         self.scan_progress.pack(fill='x',padx=22,pady=(10,2));self.scan_progress.set(0)
         ctk.CTkFrame(side,height=1,fg_color='#24395D').pack(fill='x',padx=16,pady=14)
