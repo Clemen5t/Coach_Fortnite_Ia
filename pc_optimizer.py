@@ -205,14 +205,14 @@ class WindowsSettings:
     def read(self, spec):
         kind = spec['kind']
         if kind == 'registry':
-            key, name = self._registry_target(spec)
+            hive, key, name = self._registry_target(spec)
             try:
-                with self.reg.OpenKey(self.reg.HKEY_CURRENT_USER, key) as handle:
+                with self.reg.OpenKey(hive, key) as handle:
                     value, regtype = self.reg.QueryValueEx(handle, name)
             except FileNotFoundError:
                 return {'exists': False}
             if regtype not in (self.reg.REG_DWORD, self.reg.REG_SZ, self.reg.REG_EXPAND_SZ):
-                raise ValueError('Type de registre non pris en charge : '+name)
+                raise ValueError('Type de registre non pris en charge : '+str(name))
             return {'exists': True, 'value': value, 'type': regtype}
         if kind == 'power':
             out, err, code = _run(['powercfg.exe', '/getactivescheme'])
@@ -224,24 +224,47 @@ class WindowsSettings:
             code = ctypes.windll.powrprof.PowerReadACValueIndex(None, ctypes.byref(_guid(spec['plan'])), ctypes.byref(_guid(USB_SUB)), ctypes.byref(_guid(USB_SETTING)), ctypes.byref(value))
             if code:raise OSError(code, 'Lecture de la suspension USB impossible sur ce plan.')
             return value.value
+        if kind == 'hibernate':
+            try:
+                with self.reg.OpenKey(self.reg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\Power') as handle:
+                    value,_=self.reg.QueryValueEx(handle,'HibernateEnabled')
+                return bool(value)
+            except FileNotFoundError:return False
+        if kind == 'service':
+            name=spec['name']
+            script=f"$s=Get-CimInstance Win32_Service -Filter \"Name='{name.replace(chr(39),chr(39)*2)}'\" -ErrorAction Stop; [ordered]@{{StartMode=$s.StartMode;State=$s.State}}"
+            return _strict_json(script)
+        if kind == 'net_power':
+            name=spec['name'].replace("'","''")
+            return _strict_json(f"$p=Get-NetAdapterPowerManagement -Name '{name}' -ErrorAction Stop; [ordered]@{{AllowComputerToTurnOffDevice=[string]$p.AllowComputerToTurnOffDevice}}")
+        if kind == 'net_eee':
+            name=spec['name'].replace("'","''")
+            return _strict_json(f"@($x=Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyContinue|Where-Object {{$_.DisplayName -match 'Energy.Efficient|Green Ethernet|Gigabit Lite|Power Saving|Économie.*énergie'}}; $x|Select-Object RegistryKeyword,DisplayValue)")
         raise ValueError('Type de réglage invalide.')
 
     def _registry_target(self, spec):
-        if spec.get('id') in REG_SETTINGS:return REG_SETTINGS[spec['id']]
+        if spec.get('id') in REG_SETTINGS:
+            target=REG_SETTINGS[spec['id']]
+            if len(target)==2:root,key,name='HKCU',target[0],target[1]
+            else:root,key,name=target
+            hive=self.reg.HKEY_LOCAL_MACHINE if root=='HKLM' else self.reg.HKEY_CURRENT_USER
+            return hive,key,name
         if spec.get('id') == 'startup' and isinstance(spec.get('name'), str) and spec['name'] and '\x00' not in spec['name']:
-            return RUN_KEY, spec['name']
+            return self.reg.HKEY_CURRENT_USER,RUN_KEY,spec['name']
+        if spec.get('id') == 'fortnite_gpu' and isinstance(spec.get('name'),str) and spec['name'] and '\x00' not in spec['name']:
+            return self.reg.HKEY_CURRENT_USER,r'Software\Microsoft\DirectX\UserGpuPreferences',spec['name']
         raise ValueError('Réglage de registre non autorisé.')
 
     def write(self, spec, value):
         kind = spec['kind']
         if kind == 'registry':
-            key, name = self._registry_target(spec)
+            hive, key, name = self._registry_target(spec)
             if value['exists']:
-                with self.reg.CreateKeyEx(self.reg.HKEY_CURRENT_USER, key, 0, self.reg.KEY_SET_VALUE) as handle:
+                with self.reg.CreateKeyEx(hive, key, 0, self.reg.KEY_SET_VALUE) as handle:
                     self.reg.SetValueEx(handle, name, 0, value['type'], value['value'])
             else:
                 try:
-                    with self.reg.OpenKey(self.reg.HKEY_CURRENT_USER, key, 0, self.reg.KEY_SET_VALUE) as handle:
+                    with self.reg.OpenKey(hive, key, 0, self.reg.KEY_SET_VALUE) as handle:
                         self.reg.DeleteValue(handle, name)
                 except FileNotFoundError:pass
         elif kind == 'power':
@@ -256,8 +279,34 @@ class WindowsSettings:
             if active == spec['plan']:
                 out, err, code = _run(['powercfg.exe', '/setactive', active])
                 if code:raise RuntimeError(err or out or 'Activation USB refusée.')
+        elif kind == 'hibernate':
+            out,err,code=_run(['powercfg.exe','/hibernate','on' if value else 'off'])
+            if code:raise RuntimeError(err or out or 'Modification de l’hibernation refusée.')
+        elif kind == 'service':
+            name=spec['name'];start=str(value.get('StartMode') or 'Manual')
+            sc_map={'Auto':'auto','Automatic':'auto','Manual':'demand','Disabled':'disabled'}
+            out,err,code=_run(['sc.exe','config',name,'start=',sc_map.get(start,start.lower())])
+            if code:raise RuntimeError(err or out or 'Configuration du service refusée.')
+            desired=str(value.get('State') or 'Stopped').lower()
+            if desired=='running':_run(['sc.exe','start',name],timeout=20)
+            else:_run(['sc.exe','stop',name],timeout=20)
+        elif kind == 'net_power':
+            name=spec['name'].replace("'","''");state=str(value.get('AllowComputerToTurnOffDevice') or 'Disabled')
+            script=f"Set-NetAdapterPowerManagement -Name '{name}' -AllowComputerToTurnOffDevice {state} -ErrorAction Stop"
+            out,err,code=_ps(script)
+            if code:raise RuntimeError(err or out or 'Modification alimentation réseau refusée.')
+        elif kind == 'net_eee':
+            name=spec['name'].replace("'","''")
+            rows=value if isinstance(value,list) else ([] if value is None else [value])
+            for row in rows:
+                keyword=str(row.get('RegistryKeyword') or '').replace("'","''")
+                display=str(row.get('DisplayValue') or '').replace("'","''")
+                if not keyword:continue
+                out,err,code=_ps(f"Set-NetAdapterAdvancedProperty -Name '{name}' -RegistryKeyword '{keyword}' -DisplayValue '{display}' -NoRestart -ErrorAction Stop")
+                if code:raise RuntimeError(err or out or 'Modification EEE refusée.')
         else:raise ValueError('Type de réglage invalide.')
-        if self.read(spec) != value:raise RuntimeError('La vérification du réglage a échoué.')
+        if kind not in ('service','net_eee') and self.read(spec) != value:
+            raise RuntimeError('La vérification du réglage a échoué.')
 
 
 def _save_state(path, data):
