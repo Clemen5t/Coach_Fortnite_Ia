@@ -809,6 +809,51 @@ class PCPremiumUI:
             ctk.CTkLabel(row,text=str(r.get('timestamp','')),text_color=COLORS['muted'],font=ctk.CTkFont(size=8)).pack(side='right',padx=8)
         ctk.CTkFrame(card,height=6,fg_color='transparent').pack()
 
+    def _page_lab(self):
+        self._hero('Lab Gaming','Base d’optimisation validée : Acolyte sépare ce qui est automatique, ce qui doit être mesuré et ce qui reste volontairement exclu.',COLORS['purple2'])
+        audit=pc_optimizer.gaming_research_audit(self.last_scan or {})
+        self._action_card(
+            'Pack compétitif sûr',
+            'Applique en une seule fois Game Mode, captures off, plan Ryzen équilibré, souris sans accélération, alimentation carte réseau, RSS/TCP sain et P2P Windows Update désactivé.',
+            'Automatique','Élevé','Faible',command=self.apply_competitive_pack,button='APPLIQUER'
+        )
+        for item in audit.get('cards',[]):
+            action=item.get('action')
+            command=None;button='VOIR'
+            if action in pc_optimizer.OPTIONS:
+                command=lambda key=action:self._select_and_open_option(key)
+                button='RÉGLER'
+            elif action=='open_amd':
+                command=lambda:self._run('AMD Software',pc_optimizer.open_amd_software)
+                button='AMD SOFTWARE'
+            elif action=='open_graphics':
+                command=lambda:self._run('Graphiques Windows',pc_optimizer.open_graphics_settings)
+                button='OUVRIR'
+            elif action=='shader_cache':
+                command=self.reset_shader_cache;button='RESET'
+            elif action=='fortnite_settings':
+                command=lambda:self.show('games');button='FORTNITE'
+            desc=item.get('detail','')+'\nSource : '+item.get('source','')
+            self._action_card(item.get('title','Optimisation'),desc,item.get('status','Info'),'Mesuré',item.get('risk','Faible'),command=command,button=button)
+        excluded=audit.get('excluded') or []
+        if excluded:
+            self._action_card(
+                'Tweaks volontairement exclus',
+                'Acolyte ne les applique pas automatiquement :\n• '+'\n• '.join(excluded),
+                'Protection','Variable','Élevé'
+            )
+
+    def _select_and_open_option(self,key):
+        if key not in self.option_vars:return
+        self.option_vars[key].set(True)
+        self.pending_feature_keys.add(key)
+        if key in ('net_power','net_eee','tcp_baseline','net_low_latency','nagle_off','p2p_off'):
+            self.show('network')
+        elif key in ('amd_gpu','hags_on'):
+            self.show('gpu')
+        else:
+            self.show('performance')
+
     def _page_checkup(self):
         self._hero('Routine Check-up+','Entretien complet : caches, réseau, disques et intégrité Windows. Les actions lourdes restent explicites et ne sont jamais lancées en plein jeu.',COLORS['success'])
         grid=ctk.CTkFrame(self.content,fg_color='transparent');grid.pack(fill='x',padx=8,pady=(2,8))
@@ -1058,6 +1103,23 @@ class PCPremiumUI:
         lines.append('')
         lines.append(result.get('note',''))
         self._show_result('Régions Fortnite','\n'.join(lines))
+
+    def apply_competitive_pack(self):
+        if self.busy:return
+        if pc_optimizer.game_process_running().get('running'):
+            return messagebox.showinfo('Pack compétitif','Ferme Fortnite avant d’appliquer le pack.')
+        opts=[pc_optimizer.OPTIONS[k][0] for k in pc_optimizer.COMPETITIVE_SAFE_OPTIONS if k in pc_optimizer.OPTIONS]
+        msg=(
+            'Appliquer le pack compétitif sûr ?\n\n• '+'\n• '.join(opts)+
+            '\n\nLes tweaks variables (HAGS, Nagle, RSC/Interrupt Moderation, VBS, HYPR-RX/AFMF, overclock) restent séparés et ne sont pas forcés.'
+        )
+        if not messagebox.askyesno('Pack compétitif',msg):return
+        self._run('Pack compétitif',lambda:pc_optimizer.apply_competitive_pack(self.app_dir,self.last_scan),self._competitive_pack_done)
+
+    def _competitive_pack_done(self,result):
+        text=result.get('message','Pack appliqué.')+'\n\n'+str(result.get('detail',''))+'\n\n'+str(result.get('note',''))
+        self._show_result('Pack compétitif',text)
+        self.parent.after(250,self.scan_full)
 
     def optimize_smart(self):
         if not self.last_scan:
