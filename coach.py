@@ -191,7 +191,7 @@ class PCPremiumUI:
         self.option_vars={k:tk.BooleanVar(value=False) for k in pc_optimizer.OPTIONS}
         self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={}
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
-        self.game_benchmark_active=False;self._bench_hidden=False
+        self.game_benchmark_active=False;self._bench_hidden=False;self._drift_checked=False
         ctk.set_appearance_mode('dark')
         self.root=ctk.CTkFrame(parent,fg_color=COLORS['bg'],corner_radius=0)
         self.root.pack(fill='both',expand=True)
@@ -735,6 +735,17 @@ class PCPremiumUI:
         self.score_state.configure(text=state,text_color=COLORS['success'] if score>=90 else COLORS['cyan'] if score>=80 else COLORS['warning'])
         self._render_recos(data.get('recommendations',[]))
         self._sync_feature_switches(data)
+        if not self._drift_checked:
+            self._drift_checked=True
+            states=((data.get('settings') or {}).get('feature_states') or {})
+            drift=pc_optimizer.desired_drift(self.app_dir,states)
+            if drift:
+                names=', '.join(pc_optimizer.OPTIONS[k][0] for k in drift)
+                self.log('Réapplication après redémarrage : '+names)
+                self.parent.after(250,lambda d=list(drift):self._run(
+                    'Réapplication des optimisations persistantes',
+                    lambda:pc_optimizer.apply_selected(d,self.app_dir),
+                    lambda result:self._after_mutation('Persistance des optimisations',result)))
         games=data.get('games') or [];startup=data.get('startup_count')
         breakdown=data.get('score_breakdown') or {}
         mini=' • '.join(f"{k.split()[0]} {v}" for k,v in list(breakdown.items())[:3])
