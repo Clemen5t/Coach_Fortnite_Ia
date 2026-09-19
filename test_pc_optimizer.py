@@ -130,6 +130,20 @@ class StateSyncTests(unittest.TestCase):
                 elevated.assert_called_once()
                 local.assert_not_called()
 
+    def test_balanced_requires_admin(self):
+        self.assertTrue(pc.options_require_admin(['balanced']))
+
+    def test_unexpected_access_denied_retries_elevated(self):
+        with tempfile.TemporaryDirectory() as root:
+            denied=RuntimeError('Échec ; changements de cette opération annulés. [WinError 5] Accès refusé')
+            with patch.object(pc,'is_admin',return_value=False), \
+                 patch.object(pc,'options_require_admin',return_value=False), \
+                 patch.object(pc,'_apply_batch_local',side_effect=denied) as local, \
+                 patch.object(pc,'_apply_batch_elevated',return_value='elevated') as elevated:
+                self.assertEqual(pc.apply_batch(root,['game'],[]),'elevated')
+                local.assert_called_once()
+                elevated.assert_called_once()
+
 def healthy_scan(link='2.5 Gbps'):
     return {
         'health': {
