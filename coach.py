@@ -418,7 +418,7 @@ class PCPremiumUI:
             self._action_card('Scan matériel & Windows','Lance un scan complet pour remplir le score, identifier les réglages utiles et éviter les tweaks inutiles.','À lancer','Élevé','Nul',command=self.scan_full,button='SCANNER')
 
     def _page_performance(self):
-        self._hero('Performances gaming','Des réglages réellement appliqués et relus depuis Windows après chaque redémarrage. Le profil intelligent évite les options expérimentales.',COLORS['purple2'])
+        self._hero('Performances gaming','Des réglages réellement appliqués et relus depuis Windows après chaque redémarrage. Les options à risque ne sont jamais incluses dans le profil intelligent.',COLORS['purple2'])
         self._feature_grid([
             ('game','Mode Jeu Windows','Active le mode jeu pour réduire certaines activités de fond pendant les jeux.','Faible','Faible'),
             ('captures','Captures Xbox Game Bar','Désactive la capture DVR en arrière-plan quand tu ne l’utilises pas.','Moyen','Faible'),
@@ -428,51 +428,66 @@ class PCPremiumUI:
             ('hibernation_off','Hibernation','Désactive l’hibernation sur PC fixe et libère hiberfil.sys.','Faible','Faible'),
             ('sysmain_off','SysMain','Option avancée pour tester sans SysMain. Non incluse dans l’optimisation intelligente.','Variable','Moyen'),
             ('balanced','Plan Équilibré Ryzen','Utilise le plan Équilibré comme base stable pour un Ryzen X3D.','Moyen','Faible'),
-            ('amd_gpu','Optimisation GPU AMD','Applique automatiquement Game Mode, captures off, HAGS, plan Ryzen et priorité GPU élevée pour Fortnite. Aucun OC/UV caché.','Élevé','Faible'),
+            ('amd_gpu','Optimisation GPU AMD','Configure automatiquement Windows pour la RX : Game Mode, captures off, HAGS, plan Ryzen et priorité GPU Fortnite.','Élevé','Faible'),
+            ('vbs_off','VBS / Memory Integrity','Option avancée qui coupe VBS/HVCI. Peut améliorer certains scénarios mais réduit la sécurité et nécessite un redémarrage.','Variable','Élevé'),
+            ('background_services','Services de télémétrie','Désactive uniquement DiagTrack/dmwappushservice s’ils existent.','Faible','Moyen'),
         ])
         self._button_row([('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple']),
-                          ('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2']),
-                          ('Alimentation Windows',lambda:self._open('power'),COLORS['panel2'])])
+                          ('🖥 FRÉQUENCE ÉCRAN MAX',self.max_refresh_rate,COLORS['cyan2']),
+                          ('🗓 OPTIMISER TÂCHES',self.optimize_tasks,COLORS['panel2']),
+                          ('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2'])])
 
     def _page_network(self):
         self._hero('Réseau & latence','Acolyte sépare les réglages fiables des tweaks à tester. Le DNS n’est jamais présenté comme une baisse garantie du ping en partie.',COLORS['cyan'])
         self._feature_grid([
             ('net_power','Alimentation de la carte réseau','Empêche Windows d’éteindre la carte réseau active pour économiser l’énergie.','Moyen','Faible'),
-            ('net_eee','EEE / Green Ethernet','Désactive Energy Efficient Ethernet uniquement si le pilote expose une valeur Disabled/Désactivé.','Moyen','Faible'),
+            ('net_eee','EEE / Green Ethernet','Désactive Energy Efficient Ethernet uniquement si le pilote expose une valeur compatible.','Moyen','Faible'),
+            ('tcp_baseline','Réactivité réseau Windows','Active RSS et remet l’auto-tuning TCP en Normal pour une base saine.','Moyen','Faible'),
             ('nagle_off','Test sans Nagle','Applique TCPNoDelay et TcpAckFrequency sur l’interface active. À comparer avant/après.','Variable','Moyen'),
             ('p2p_off','Partage P2P des mises à jour','Désactive le P2P de Delivery Optimization afin d’éviter des uploads Windows en arrière-plan.','Faible','Faible'),
         ])
-        self._action_card('Benchmark réseau','Mesure passerelle, Cloudflare et Google avec ping, jitter et réponses perdues.','Mesurable','Élevé','Nul',command=self.benchmark,button='TESTER')
-        self._action_card('Diagnostic carte réseau','Lit la liaison, la passerelle, DNS, RSS/RSC et les options d’alimentation.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('network'),button='ANALYSER')
+        self._button_row([('◫ BENCHMARK',self.benchmark,'#1675E0'),
+                          ('⚡ DNS AUTO',self.auto_dns,COLORS['purple']),
+                          ('↻ RAFRAÎCHIR RÉSEAU',self.refresh_network,COLORS['cyan2']),
+                          ('ANALYSER',lambda:self._diagnostic('network'),COLORS['panel2'])])
 
     def _page_gpu(self):
-        self._hero('Carte graphique','Détection du GPU principal, version du pilote et accès aux outils officiels.',COLORS['purple2'])
-        self._action_card('Pilotes GPU','Affiche les pilotes installés. La présence d’une mise à jour est vérifiée chez le fabricant.','Lecture seule','Élevé','Nul',command=lambda:self._diagnostic('gpu'),button='LIRE')
-        self._button_row([('AMD Adrenalin / pilotes',lambda:self._open('amd'),COLORS['purple']),('Graphiques Windows',lambda:self._open('graphics'),COLORS['panel2']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2'])])
+        self._hero('Carte graphique','Détection du GPU principal, pilote et profil AMD automatique sans overclocking ni clé Adrenalin privée.',COLORS['purple2'])
+        self._feature_grid([
+            ('amd_gpu','Optimisation GPU AMD','Applique automatiquement le profil Windows gaming pour Fortnite et la RX 7900 XT.','Élevé','Faible'),
+            ('hags_on','HAGS','Planification GPU accélérée par matériel, mesurable avec le benchmark en jeu.','Variable','Faible'),
+        ])
+        self._button_row([('LIRE LES PILOTES',lambda:self._diagnostic('gpu'),COLORS['cyan2']),
+                          ('AMD OFFICIEL',lambda:self._open('amd'),COLORS['purple']),
+                          ('GRAPHISMES WINDOWS',lambda:self._open('graphics'),COLORS['panel2']),
+                          ('RESET CACHE SHADERS',self.reset_shader_cache,COLORS['panel2'])])
 
     def _page_privacy(self):
-        self._hero('Confidentialité Windows','Fonctions de confidentialité configurées par compte. Defender, pare-feu et Windows Update ne sont jamais désactivés par ces options.',COLORS['cyan'])
+        self._hero('Confidentialité Windows','Fonctions de confidentialité configurées et relues depuis Windows. Defender, pare-feu et Windows Update restent protégés.',COLORS['cyan'])
         self._feature_grid([
             ('ads','Identifiant publicitaire','Désactive l’identifiant publicitaire Windows.','Faible','Faible'),
             ('suggestions','Suggestions Windows','Réduit les recommandations et contenus promotionnels.','Faible','Faible'),
             ('silent_installs','Installations suggérées','Bloque les installations silencieuses déclenchées par Content Delivery Manager.','Faible','Faible'),
             ('tailored','Expériences personnalisées','Réduit la personnalisation basée sur les données de diagnostic.','Faible','Faible'),
+            ('telemetry_min','Télémétrie Windows minimale','Force le niveau de diagnostic au minimum autorisé par l’édition de Windows.','Faible','Faible'),
             ('error_reporting','Rapports d’erreurs utilisateur','Désactive Windows Error Reporting pour le compte courant.','Faible','Faible'),
             ('location','Géolocalisation des apps','Refuse l’accès à la position pour le compte courant.','Faible','Faible'),
             ('online_speech','Reconnaissance vocale en ligne','Désactive le consentement à la reconnaissance vocale connectée Windows.','Faible','Faible'),
             ('storage_sense_off','Storage Sense','Désactive le nettoyage automatique Storage Sense.','Faible','Faible'),
         ])
-        self._button_row([('Paramètres confidentialité',lambda:self._open('privacy'),COLORS['panel2'])])
+        self._button_row([('PARAMÈTRES CONFIDENTIALITÉ',lambda:self._open('privacy'),COLORS['panel2'])])
 
     def _page_comfort(self):
-        self._hero('Confort & interface','Réglages d’ergonomie et de fond qui peuvent rendre Windows plus prévisible sans toucher au cœur du système.',COLORS['gold'])
+        self._hero('Confort & interface','Réglages d’ergonomie et de fond qui rendent Windows plus prévisible sans toucher au cœur du système.',COLORS['gold'])
         self._feature_grid([
             ('mouse_accel_off','Souris sans accélération','Désactive Enhance Pointer Precision pour un mouvement plus reproductible en jeu.','Moyen','Faible'),
+            ('explorer_tweaks','Explorateur Windows','Réduit les notifications promotionnelles et ouvre directement Ce PC.','Faible','Faible'),
             ('widgets_off','Widgets Windows','Masque Widgets de la barre des tâches.','Faible','Faible'),
             ('edge_background_off','Edge en arrière-plan','Désactive Startup Boost et le mode arrière-plan d’Edge via stratégie utilisateur.','Faible','Faible'),
             ('copilot_off','Microsoft Copilot','Masque Copilot via stratégie utilisateur.','Faible','Faible'),
             ('classic_context','Menu contextuel classique','Restaure le menu clic droit classique de Windows 11.','Faible','Faible'),
         ])
+        self._button_row([('DÉSINSTALLER ONEDRIVE',self.remove_onedrive,COLORS['danger'])])
 
     def _page_startup(self):
         self._hero('Démarrage','Inventorie les entrées Run du compte actuel. Retire uniquement ce que tu reconnais.',COLORS['gold'])
@@ -645,10 +660,27 @@ class PCPremiumUI:
         ctk.CTkFrame(card,height=6,fg_color='transparent').pack()
 
     def _page_checkup(self):
-        self._hero('Check-up système','Santé Windows, stockage, fichiers temporaires et caches. Le mode cache reste volontairement prudent pour ne pas provoquer de recompilation shaders ou de stutters.',COLORS['success'])
-        self._action_card('Analyse entretien','Compte les temporaires, vérifie l’espace libre et alimente le score Santé du PC.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('checkup'),button='ANALYSER')
-        self._action_card('Vider le cache Windows','Nettoie les fichiers TEMP de plus de 24 h, vide le cache DNS et tente de purger le cache Delivery Optimization. Le cache shaders DirectX est conservé.','Action locale','Faible','Faible',command=self.clear_windows_cache,button='VIDER LE CACHE')
-        self._action_card('Nettoyage prudent TEMP','Supprime uniquement les fichiers temporaires utilisateur anciens de plus de 7 jours et non verrouillés.','Action locale','Faible','Faible',command=self.cleanup_temp,button='NETTOYER TEMP')
+        self._hero('Routine Check-up+','Entretien complet : caches, réseau, disques et intégrité Windows. Les actions lourdes restent explicites et ne sont jamais lancées en plein jeu.',COLORS['success'])
+        grid=ctk.CTkFrame(self.content,fg_color='transparent');grid.pack(fill='x',padx=8,pady=(2,8))
+        for col in range(3):grid.grid_columnconfigure(col,weight=1,uniform='check')
+        actions=[
+            ('Fichiers temporaires','Nettoie le dossier TEMP utilisateur en conservant les fichiers récents/verrouillés.',self.clear_windows_cache,'VIDER','#00BFA5'),
+            ('Cache shaders GPU','Réinitialise D3DSCache et les caches AMD/NVIDIA. Peut provoquer des stutters au prochain lancement.',self.reset_shader_cache,'RÉINITIALISER',COLORS['purple']),
+            ('Rafraîchissement réseau','Vide DNS, ARP et le cache NetBIOS sans réinitialiser entièrement la pile réseau.',self.refresh_network,'RAFRAÎCHIR',COLORS['cyan2']),
+            ('Optimisation des disques','Lance defrag /O : Windows choisit TRIM pour SSD et optimisation adaptée aux HDD.',self.optimize_disks,'OPTIMISER',COLORS['gold']),
+            ('Historique Windows','Nettoie fichiers récents, Jump Lists et caches miniature non verrouillés.',self.clear_history,'NETTOYER',COLORS['panel2']),
+            ('Réparation système','Exécute DISM RestoreHealth puis SFC /scannow. Peut prendre longtemps.',self.repair_system,'RÉPARER',COLORS['danger']),
+            ('Cache Windows Update','Nettoie SoftwareDistribution\\\\Download après arrêt temporaire de Windows Update/BITS.',self.clear_update_cache,'NETTOYER',COLORS['panel2']),
+        ]
+        for idx,(title,desc,cmd,button,color) in enumerate(actions):
+            card=ctk.CTkFrame(grid,fg_color='#0B111D',corner_radius=16,border_width=1,border_color='#1B2A44')
+            card.grid(row=idx//3,column=idx%3,sticky='nsew',padx=5,pady=5)
+            ctk.CTkLabel(card,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=13,weight='bold'),
+                wraplength=255,justify='left').pack(anchor='w',padx=14,pady=(13,4))
+            ctk.CTkLabel(card,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),
+                wraplength=285,justify='left').pack(anchor='w',padx=14,pady=(0,10))
+            ctk.CTkButton(card,text=button,command=cmd,height=31,corner_radius=9,fg_color=color).pack(anchor='w',padx=14,pady=(0,13))
+        self._button_row([('ANALYSER LE CHECK-UP',lambda:self._diagnostic('checkup'),COLORS['cyan2'])])
 
     def _page_bios(self):
         self._hero('BIOS / RAM','Diagnostic uniquement : vitesse RAM configurée, profil mémoire à vérifier, UEFI et virtualisation.',COLORS['warning'])
