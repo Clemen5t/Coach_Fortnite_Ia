@@ -183,13 +183,13 @@ class ScoreRing(tk.Canvas):
 class PCPremiumUI:
     NAV=[
         ('dashboard','⌂','Tableau de bord'),('performance','⚡','Performances'),('network','↔','Réseau'),
-        ('gpu','◈','Carte graphique'),('privacy','◉','Confidentialité'),('startup','↗','Démarrage'),
+        ('gpu','◈','Carte graphique'),('privacy','◉','Confidentialité'),('comfort','✦','Confort'),('startup','↗','Démarrage'),
         ('games','🎮','Jeux'),('checkup','✓','Check-up'),('bios','◆','BIOS / RAM'),
         ('apps','▦','Logiciels'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
         self.option_vars={k:tk.BooleanVar(value=(k in ('game','captures','balanced'))) for k in pc_optimizer.OPTIONS}
-        self.nav_buttons={};self.reco_widgets=[];self._last_net=None
+        self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={}
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.game_benchmark_active=False;self._bench_hidden=False
         ctk.set_appearance_mode('dark')
@@ -331,6 +331,61 @@ class PCPremiumUI:
         if command:
             ctk.CTkButton(right,text=button,command=command,width=110,height=32,corner_radius=9,fg_color=COLORS['purple']).pack()
 
+    def _feature_grid(self,items):
+        grid=ctk.CTkFrame(self.content,fg_color='transparent')
+        grid.pack(fill='x',padx=8,pady=(2,8))
+        for col in range(3):grid.grid_columnconfigure(col,weight=1,uniform='feature')
+        for idx,item in enumerate(items):
+            key,title,desc,impact,risk=item
+            card=ctk.CTkFrame(grid,fg_color='#0B111D',corner_radius=16,border_width=1,border_color='#1B2A44')
+            card.grid(row=idx//3,column=idx%3,sticky='nsew',padx=5,pady=5)
+            top=ctk.CTkFrame(card,fg_color='transparent');top.pack(fill='x',padx=14,pady=(13,5))
+            ctk.CTkLabel(top,text=title,text_color=COLORS['text'],font=ctk.CTkFont(size=13,weight='bold'),
+                wraplength=255,justify='left').pack(side='left',anchor='nw')
+            switch=ctk.CTkSwitch(top,text='',width=42,variable=self.option_vars[key],progress_color='#00E6A8',
+                button_color='#F4F7FB',button_hover_color='#FFFFFF',
+                command=lambda k=key:self._toggle_feature(k))
+            switch.pack(side='right',anchor='ne')
+            ctk.CTkLabel(card,text=desc,text_color=COLORS['muted'],font=ctk.CTkFont(size=9),
+                wraplength=290,justify='left').pack(anchor='w',padx=14,pady=(2,9))
+            foot=ctk.CTkFrame(card,fg_color='transparent');foot.pack(fill='x',padx=14,pady=(0,12))
+            state=ctk.CTkLabel(foot,text='ÉTAT INCONNU',fg_color='#25324A',corner_radius=999,text_color='#C7D5EA',
+                font=ctk.CTkFont(size=8,weight='bold'),padx=8,pady=2)
+            state.pack(side='left')
+            self.feature_state_labels[key]=state
+            ctk.CTkLabel(foot,text=f'Impact {impact}  •  Risque {risk}',text_color='#6F84A5',
+                font=ctk.CTkFont(size=8)).pack(side='right')
+
+    def _toggle_feature(self,key):
+        if self.busy:
+            # Le scan remettra la vraie valeur.
+            if self.last_scan:self._sync_feature_switches(self.last_scan)
+            return
+        desired=bool(self.option_vars[key].get())
+        title=pc_optimizer.OPTIONS[key][0]
+        if desired:
+            self._run('Activation '+title,lambda:pc_optimizer.apply_selected([key],self.app_dir),
+                lambda result:self._feature_changed(title,result))
+        else:
+            self._run('Restauration '+title,lambda:pc_optimizer.restore_feature(self.app_dir,key),
+                lambda result:self._feature_changed(title,result))
+
+    def _feature_changed(self,title,result):
+        self._show_result(title,result)
+        self.parent.after(250,self.scan_full)
+
+    def _sync_feature_switches(self,data):
+        states=((data.get('settings') or {}).get('feature_states') or {})
+        for key,var in self.option_vars.items():
+            state=states.get(key)
+            if isinstance(state,bool):var.set(state)
+            elif state is None:var.set(False)
+            label=self.feature_state_labels.get(key)
+            if label:
+                if state is True:label.configure(text='ACTIF',fg_color='#124A39',text_color='#46E6B0')
+                elif state is False:label.configure(text='INACTIF',fg_color='#3E2730',text_color='#F49AAA')
+                else:label.configure(text='INDISPONIBLE',fg_color='#30394B',text_color='#9EB0CC')
+
     def _button_row(self,items):
         row=ctk.CTkFrame(self.content,fg_color='transparent');row.pack(fill='x',padx=10,pady=6)
         for text,cmd,color in items:
@@ -363,16 +418,32 @@ class PCPremiumUI:
             self._action_card('Scan matériel & Windows','Lance un scan complet pour remplir le score, identifier les réglages utiles et éviter les tweaks inutiles.','À lancer','Élevé','Nul',command=self.scan_full,button='SCANNER')
 
     def _page_performance(self):
-        self._hero('Performances gaming','Réglages sûrs et restaurables. Aucun overclocking, undervolt ou désactivation de sécurité automatique.',COLORS['purple2'])
-        self._action_card('Mode Jeu Windows','Priorise mieux les ressources pour les jeux et réduit certaines activités de fond.','Recommandé','Faible','Faible','game')
-        self._action_card('Captures Xbox Game Bar','Désactive les captures en arrière-plan si tu ne les utilises pas.','Optionnel','Moyen','Faible','captures')
-        self._action_card('Plan d’alimentation Équilibré','Base stable recommandée pour Ryzen X3D ; les boosts CPU restent gérés par le firmware.','Recommandé','Moyen','Faible','balanced')
-        self._button_row([('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple']),('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2']),('Alimentation',lambda:self._open('power'),COLORS['panel2'])])
+        self._hero('Performances gaming','Des réglages réellement appliqués et relus depuis Windows après chaque redémarrage. Le profil intelligent évite les options expérimentales.',COLORS['purple2'])
+        self._feature_grid([
+            ('game','Mode Jeu Windows','Active le mode jeu pour réduire certaines activités de fond pendant les jeux.','Faible','Faible'),
+            ('captures','Captures Xbox Game Bar','Désactive la capture DVR en arrière-plan quand tu ne l’utilises pas.','Moyen','Faible'),
+            ('background_apps','Apps en arrière-plan','Réduit l’activité des apps Microsoft Store en arrière-plan.','Moyen','Faible'),
+            ('hags_on','Planification GPU HAGS','Active la planification GPU accélérée par matériel. À valider avec le benchmark Fortnite.','Variable','Faible'),
+            ('fast_startup_off','Démarrage rapide','Désactive l’hibernation hybride pour éviter certains états pilotes persistants.','Faible','Faible'),
+            ('hibernation_off','Hibernation','Désactive l’hibernation sur PC fixe et libère hiberfil.sys.','Faible','Faible'),
+            ('sysmain_off','SysMain','Option avancée pour tester sans SysMain. Non incluse dans l’optimisation intelligente.','Variable','Moyen'),
+            ('balanced','Plan Équilibré Ryzen','Utilise le plan Équilibré comme base stable pour un Ryzen X3D.','Moyen','Faible'),
+            ('amd_gpu','Optimisation GPU AMD','Applique automatiquement Game Mode, captures off, HAGS, plan Ryzen et priorité GPU élevée pour Fortnite. Aucun OC/UV caché.','Élevé','Faible'),
+        ])
+        self._button_row([('⚡ OPTIMISER INTELLIGENT',self.optimize_smart,COLORS['purple']),
+                          ('Mode Jeu Windows',lambda:self._open('game'),COLORS['panel2']),
+                          ('Alimentation Windows',lambda:self._open('power'),COLORS['panel2'])])
 
     def _page_network(self):
-        self._hero('Réseau & latence','Ping ICMP vers la box et Internet, diagnostic de la carte, RSS/RSC, DNS et économie d’énergie.',COLORS['cyan'])
+        self._hero('Réseau & latence','Acolyte sépare les réglages fiables des tweaks à tester. Le DNS n’est jamais présenté comme une baisse garantie du ping en partie.',COLORS['cyan'])
+        self._feature_grid([
+            ('net_power','Alimentation de la carte réseau','Empêche Windows d’éteindre la carte réseau active pour économiser l’énergie.','Moyen','Faible'),
+            ('net_eee','EEE / Green Ethernet','Désactive Energy Efficient Ethernet uniquement si le pilote expose une valeur Disabled/Désactivé.','Moyen','Faible'),
+            ('nagle_off','Test sans Nagle','Applique TCPNoDelay et TcpAckFrequency sur l’interface active. À comparer avant/après.','Variable','Moyen'),
+            ('p2p_off','Partage P2P des mises à jour','Désactive le P2P de Delivery Optimization afin d’éviter des uploads Windows en arrière-plan.','Faible','Faible'),
+        ])
         self._action_card('Benchmark réseau','Mesure passerelle, Cloudflare et Google avec ping, jitter et réponses perdues.','Mesurable','Élevé','Nul',command=self.benchmark,button='TESTER')
-        self._action_card('Diagnostic carte réseau','Lit la liaison, la passerelle, les DNS, RSS/RSC et les options d’alimentation sans rien modifier.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('network'),button='ANALYSER')
+        self._action_card('Diagnostic carte réseau','Lit la liaison, la passerelle, DNS, RSS/RSC et les options d’alimentation.','Lecture seule','Moyen','Nul',command=lambda:self._diagnostic('network'),button='ANALYSER')
 
     def _page_gpu(self):
         self._hero('Carte graphique','Détection du GPU principal, version du pilote et accès aux outils officiels.',COLORS['purple2'])
@@ -380,10 +451,28 @@ class PCPremiumUI:
         self._button_row([('AMD Adrenalin / pilotes',lambda:self._open('amd'),COLORS['purple']),('Graphiques Windows',lambda:self._open('graphics'),COLORS['panel2']),('NVIDIA',lambda:self._open('nvidia'),COLORS['panel2'])])
 
     def _page_privacy(self):
-        self._hero('Confidentialité Windows','Réduit certains contenus promotionnels sans désactiver Defender, le pare-feu, Windows Update ou les protections système.',COLORS['cyan'])
-        self._action_card('Identifiant publicitaire','Désactive l’identifiant publicitaire du compte courant.','Restaurable','Faible','Faible','ads')
-        self._action_card('Suggestions promotionnelles','Réduit certaines suggestions Windows pour le compte courant.','Restaurable','Faible','Faible','suggestions')
-        self._button_row([('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple']),('Paramètres confidentialité',lambda:self._open('privacy'),COLORS['panel2'])])
+        self._hero('Confidentialité Windows','Fonctions de confidentialité configurées par compte. Defender, pare-feu et Windows Update ne sont jamais désactivés par ces options.',COLORS['cyan'])
+        self._feature_grid([
+            ('ads','Identifiant publicitaire','Désactive l’identifiant publicitaire Windows.','Faible','Faible'),
+            ('suggestions','Suggestions Windows','Réduit les recommandations et contenus promotionnels.','Faible','Faible'),
+            ('silent_installs','Installations suggérées','Bloque les installations silencieuses déclenchées par Content Delivery Manager.','Faible','Faible'),
+            ('tailored','Expériences personnalisées','Réduit la personnalisation basée sur les données de diagnostic.','Faible','Faible'),
+            ('error_reporting','Rapports d’erreurs utilisateur','Désactive Windows Error Reporting pour le compte courant.','Faible','Faible'),
+            ('location','Géolocalisation des apps','Refuse l’accès à la position pour le compte courant.','Faible','Faible'),
+            ('online_speech','Reconnaissance vocale en ligne','Désactive le consentement à la reconnaissance vocale connectée Windows.','Faible','Faible'),
+            ('storage_sense_off','Storage Sense','Désactive le nettoyage automatique Storage Sense.','Faible','Faible'),
+        ])
+        self._button_row([('Paramètres confidentialité',lambda:self._open('privacy'),COLORS['panel2'])])
+
+    def _page_comfort(self):
+        self._hero('Confort & interface','Réglages d’ergonomie et de fond qui peuvent rendre Windows plus prévisible sans toucher au cœur du système.',COLORS['gold'])
+        self._feature_grid([
+            ('mouse_accel_off','Souris sans accélération','Désactive Enhance Pointer Precision pour un mouvement plus reproductible en jeu.','Moyen','Faible'),
+            ('widgets_off','Widgets Windows','Masque Widgets de la barre des tâches.','Faible','Faible'),
+            ('edge_background_off','Edge en arrière-plan','Désactive Startup Boost et le mode arrière-plan d’Edge via stratégie utilisateur.','Faible','Faible'),
+            ('copilot_off','Microsoft Copilot','Masque Copilot via stratégie utilisateur.','Faible','Faible'),
+            ('classic_context','Menu contextuel classique','Restaure le menu clic droit classique de Windows 11.','Faible','Faible'),
+        ])
 
     def _page_startup(self):
         self._hero('Démarrage','Inventorie les entrées Run du compte actuel. Retire uniquement ce que tu reconnais.',COLORS['gold'])
@@ -613,8 +702,7 @@ class PCPremiumUI:
         state='EXCELLENT' if score>=90 else 'BON ÉTAT' if score>=80 else 'À OPTIMISER' if score>=65 else 'ATTENTION'
         self.score_state.configure(text=state,text_color=COLORS['success'] if score>=90 else COLORS['cyan'] if score>=80 else COLORS['warning'])
         self._render_recos(data.get('recommendations',[]))
-        opts=set(pc_optimizer.recommended_options(data))
-        for key in ('game','captures','balanced'):self.option_vars[key].set(key in opts)
+        self._sync_feature_switches(data)
         games=data.get('games') or [];startup=data.get('startup_count')
         breakdown=data.get('score_breakdown') or {}
         mini=' • '.join(f"{k.split()[0]} {v}" for k,v in list(breakdown.items())[:3])
