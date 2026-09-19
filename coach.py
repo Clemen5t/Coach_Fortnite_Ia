@@ -807,8 +807,17 @@ class PCPremiumUI:
         self.parent.after(250,self.scan_full)
 
     def restore(self):
-        if not messagebox.askyesno('Restaurer','Rétablir les réglages suivis par Acolyte depuis la sauvegarde initiale ?'):return
-        self._run('Restauration',lambda:pc_optimizer.restore(self.app_dir),lambda x:self._after_mutation('Restauration',x))
+        if not messagebox.askyesno('Restaurer','Rétablir les réglages suivis par Acolyte depuis la sauvegarde initiale ?\n\nLes DNS et tâches planifiées sauvegardés seront également restaurés si possible.'):return
+        def work():
+            results=[]
+            try:results.append(pc_optimizer.restore(self.app_dir))
+            except Exception as exc:results.append('Réglages : '+str(exc))
+            try:results.append(pc_optimizer.restore_dns(self.app_dir))
+            except Exception as exc:results.append('DNS : '+str(exc))
+            try:results.append(pc_optimizer.restore_scheduled_tasks(self.app_dir))
+            except Exception as exc:results.append('Tâches : '+str(exc))
+            return '\n'.join(str(x) for x in results if x)
+        self._run('Restauration',work,lambda x:self._after_mutation('Restauration',x))
 
     def cleanup_temp(self):
         if not messagebox.askyesno('Nettoyage prudent','Supprimer uniquement les fichiers TEMP utilisateur vieux de plus de 7 jours ?'):return
@@ -832,6 +841,45 @@ class PCPremiumUI:
             messagebox.showinfo('Cache Windows',f'Nettoyage terminé.\n\nEspace TEMP libéré : {freed:.1f} Mo\nCache DNS : '+('vidé' if result.get('dns_flushed') else 'non vidé')+'\nCache shaders DirectX : conservé')
         except Exception:pass
         self.parent.after(250,self.scan_full)
+
+    def reset_shader_cache(self):
+        if not messagebox.askyesno('Cache shaders GPU','Ferme Fortnite avant cette opération.\n\nRéinitialiser les caches shaders DirectX/AMD/NVIDIA ? Le prochain lancement peut avoir des stutters temporaires pendant la recompilation.'):return
+        self._run('Cache shaders GPU',pc_optimizer.reset_gpu_shader_cache,lambda x:self._show_result('Cache shaders GPU',x))
+
+    def refresh_network(self):
+        self._run('Rafraîchissement réseau',pc_optimizer.refresh_network_cache,lambda x:self._show_result('Réseau',x))
+
+    def optimize_disks(self):
+        if not messagebox.askyesno('Optimisation des disques','Windows va optimiser tous les volumes fixes avec la méthode adaptée au média. Cette opération peut prendre plusieurs minutes. Continuer ?'):return
+        self._run('Optimisation des disques',pc_optimizer.optimize_disks,lambda x:self._show_result('Disques',x))
+
+    def repair_system(self):
+        if not messagebox.askyesno('Réparation Windows','Lancer DISM RestoreHealth puis SFC /scannow ?\n\nCette opération peut durer longtemps et nécessite le mode administrateur.'):return
+        self._run('Réparation Windows',pc_optimizer.repair_system_files,lambda x:self._show_result('Réparation Windows',x))
+
+    def clear_history(self):
+        if not messagebox.askyesno('Historique Windows','Supprimer les fichiers récents, Jump Lists et caches miniature accessibles ?'):return
+        self._run('Historique Windows',pc_optimizer.clear_windows_history,lambda x:self._show_result('Historique Windows',x))
+
+    def clear_update_cache(self):
+        if not messagebox.askyesno('Cache Windows Update','Nettoyer le cache de téléchargement Windows Update ?\n\nLes services Windows Update et BITS seront arrêtés puis redémarrés automatiquement.'):return
+        self._run('Cache Windows Update',pc_optimizer.clear_windows_update_cache,lambda x:self._show_result('Windows Update',x))
+
+    def auto_dns(self):
+        if not messagebox.askyesno('DNS automatique','Acolyte va tester Cloudflare, Google et Quad9 puis appliquer le résolveur le plus rapide sur la carte active.\n\nCela accélère surtout la résolution de noms et ne garantit pas moins de ping en partie. Continuer ?'):return
+        self._run('Test DNS automatique',lambda:pc_optimizer.auto_dns(self.app_dir),lambda x:self._show_result('DNS automatique',x))
+
+    def max_refresh_rate(self):
+        if not messagebox.askyesno('Fréquence écran','Régler l’écran principal sur la fréquence maximale détectée pour sa résolution actuelle ?'):return
+        self._run('Fréquence écran maximale',pc_optimizer.set_max_refresh_rate,lambda x:self._show_result('Affichage',x))
+
+    def optimize_tasks(self):
+        if not messagebox.askyesno('Tâches planifiées','Désactiver uniquement la liste conservatrice de tâches Windows de télémétrie suivies par Acolyte ?\n\nUne sauvegarde est créée pour pouvoir les réactiver.'):return
+        self._run('Optimisation des tâches',lambda:pc_optimizer.optimize_scheduled_tasks(self.app_dir),lambda x:self._show_result('Tâches planifiées',x))
+
+    def remove_onedrive(self):
+        if not messagebox.askyesno('OneDrive','Désinstaller OneDrive de Windows ?\n\nCette action ne sera pas annulée par le bouton Restaurer ; OneDrive pourra être réinstallé depuis Microsoft.'):return
+        self._run('Désinstallation OneDrive',pc_optimizer.uninstall_onedrive,lambda x:self._show_result('OneDrive',x))
 
     def load_startup(self):
         self._run('Démarrage',pc_optimizer.startup_items,self._render_startup)
