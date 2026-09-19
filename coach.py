@@ -188,7 +188,7 @@ class PCPremiumUI:
         ('apps','▦','Logiciels'),('updates','↻','Mises à jour'),('usb','⌁','USB')]
     def __init__(self,parent,app_dir):
         self.parent=parent;self.app_dir=app_dir;self.busy=False;self.last_scan=None;self.last_benchmark=None
-        self.option_vars={k:tk.BooleanVar(value=(k in ('game','captures','balanced'))) for k in pc_optimizer.OPTIONS}
+        self.option_vars={k:tk.BooleanVar(value=False) for k in pc_optimizer.OPTIONS}
         self.nav_buttons={};self.reco_widgets=[];self._last_net=None;self.feature_state_labels={}
         self.game_duration_var=tk.StringVar(value='60 s');self.game_phase_var=tk.StringVar(value='AVANT optimisation')
         self.game_benchmark_active=False;self._bench_hidden=False
@@ -698,7 +698,7 @@ class PCPremiumUI:
     def _page_usb(self):
         self._hero('USB & périphériques','Diagnostic de périphériques et test optionnel sans suspension USB sur secteur. Aucun gain de latence n’est garanti.',COLORS['cyan'])
         self._action_card('Suspension sélective USB','À tester uniquement en cas de déconnexions de périphériques.','Dépannage','Faible','Faible','usb')
-        self._button_row([('LISTER LES PÉRIPHÉRIQUES',lambda:self._diagnostic('usb'),COLORS['cyan2']),('APPLIQUER LA SÉLECTION',self.apply_selected,COLORS['purple'])])
+        self._button_row([('LISTER LES PÉRIPHÉRIQUES',lambda:self._diagnostic('usb'),COLORS['cyan2'])])
 
     def _page_generic(self):self._hero('Section','Contenu en cours de chargement.')
 
