@@ -65,6 +65,13 @@ class Tests(unittest.TestCase):
                 self.assertTrue(str(state).startswith(str(Path(local))))
                 self.assertNotEqual(state.parent,Path(app))
 
+    def test_unreadable_state_is_ignored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing=Path(folder)/'missing.json'
+            self.assertEqual(updater.read_json(missing,{'ok':1}),{'ok':1})
+            bad=Path(folder)/'bad.json';bad.write_text('{broken',encoding='utf-8')
+            self.assertEqual(updater.read_json(bad,{'ok':2}),{'ok':2})
+
     def test_current(self):
         with tempfile.TemporaryDirectory() as folder:
             updater.write_json(updater.updater_state_file(folder),{'repo':'name/coach','sha':'b'*40})
