@@ -1786,12 +1786,32 @@ def full_scan():
     except Exception:games=[]
     try:startup_count=len(startup_items())
     except Exception:startup_count=None
+    try:fortnite=fortnite_profile_status()
+    except Exception as exc:fortnite={'game':'Fortnite','supported':True,'installed':False,'error':str(exc),'score':0}
     scan={'system':system,'network':network,'bios':bios,'maintenance':maintenance,
-          'settings':settings,'health':health,'games':games,'startup_count':startup_count}
-    score,recommendations,positives,breakdown=score_scan(scan)
-    scan['score']=score;scan['recommendations']=recommendations;scan['positives']=positives
+          'settings':settings,'health':health,'games':games,'startup_count':startup_count,
+          'game_profiles':{'fortnite':fortnite}}
+
+    legacy_score,recommendations,positives,breakdown=score_scan(scan)
+
+    # Santé = état Windows/stockage/réseau. Les réglages gaming sont volontairement exclus.
+    health_points=sum(int(breakdown.get(k,0)) for k in (
+        'Sécurité Windows','Stockage / entretien','Démarrage','Réseau','État Windows'))
+    health_score=round(health_points/70*100)
+
+    gaming_score,gaming_breakdown,gaming_recos=gaming_score_scan(scan)
+    recommendations.extend(gaming_recos)
+    overall=round(health_score*0.45+gaming_score*0.55)
+
+    scan['score']=overall
+    scan['health_score']=health_score
+    scan['gaming_score']=gaming_score
+    scan['legacy_score']=legacy_score
+    scan['recommendations']=recommendations
+    scan['positives']=positives
     scan['score_breakdown']=breakdown
-    scan['score_note']="Le score mesure l'état/configuration Windows, la sécurité, le stockage, le démarrage et les réglages gaming. Il ne note pas la puissance ou le prix du matériel."
+    scan['gaming_breakdown']=gaming_breakdown
+    scan['score_note']="Score Acolyte = 45 % santé Windows + 55 % performance gaming. Le score gaming réserve des points au profil du jeu et au benchmark réel ; il ne note pas le prix du matériel."
     return scan
 
 def _reg_is(snapshot, value):
@@ -1930,6 +1950,74 @@ def score_scan(scan):
         breakdown[key]=max(0,min(maxv,int(breakdown[key])))
     score=sum(breakdown.values())
     return score,rec,ok,breakdown
+
+def gaming_score_scan(scan):
+    """Score gaming strict : configuration mesurable + profil du jeu + benchmark réel."""
+    breakdown={'Windows gaming':0,'Profil Fortnite':0,'RAM / BIOS':0,'Benchmark réel':0}
+    rec=[]
+
+    settings=scan.get('settings') or {}
+    states=settings.get('feature_states') or {}
+    health=scan.get('health') or {}
+    net=scan.get('network') or {}
+
+    # Windows gaming : 30 pts.
+    if states.get('game') is True:breakdown['Windows gaming']+=10
+    else:rec.append({'level':'important','title':'Mode Jeu non confirmé','detail':'Le score gaming attend le Mode Jeu Windows actif.','section':'performance','option':'game'})
+
+    if states.get('captures') is True:breakdown['Windows gaming']+=5
+    else:rec.append({'level':'info','title':'Captures en arrière-plan','detail':'Game DVR/captures ne sont pas confirmés désactivés.','section':'performance','option':'captures'})
+
+    if states.get('balanced') is True:breakdown['Windows gaming']+=5
+    else:rec.append({'level':'info','title':'Plan d’alimentation gaming','detail':'Le plan Équilibré n’est pas confirmé comme base Ryzen X3D.','section':'performance','option':'balanced'})
+
+    if net.get('status')=='online' and net.get('rss') is not False:breakdown['Windows gaming']+=5
+    if health.get('pending_reboot') is not True:breakdown['Windows gaming']+=5
+
+    # Profil Fortnite : 35 pts.
+    profile=((scan.get('game_profiles') or {}).get('fortnite') or {})
+    if profile.get('installed'):
+        breakdown['Profil Fortnite']+=5
+        rt=int(profile.get('registry_total') or 0);ro=int(profile.get('registry_ok') or 0)
+        ct=int(profile.get('config_total') or 0);co=int(profile.get('config_ok') or 0)
+        if rt:breakdown['Profil Fortnite']+=round(15*ro/rt)
+        if ct and profile.get('config_exists'):breakdown['Profil Fortnite']+=round(15*co/ct)
+        if breakdown['Profil Fortnite']<30:
+            rec.append({'level':'info','title':'Profil Fortnite non optimisé','detail':'Le profil compétitif Fortnite n’est pas entièrement appliqué.','section':'games'})
+    else:
+        rec.append({'level':'info','title':'Fortnite non détecté','detail':'Aucun score de profil Fortnite ne peut être calculé.','section':'games'})
+
+    # RAM / BIOS : 15 pts.
+    bios=scan.get('bios') or {}
+    hints=bios.get('hints') if isinstance(bios,dict) else []
+    if hints:
+        breakdown['RAM / BIOS']=5
+        rec.append({'level':'important','title':'RAM / BIOS à vérifier','detail':str(hints[0]),'section':'bios'})
+    else:
+        breakdown['RAM / BIOS']=15
+
+    # Benchmark réel : 20 pts. Pas de bonus gratuit si rien n'a été mesuré.
+    history=benchmark_history(1)
+    if history:
+        last=history[-1]
+        avg=float(last.get('avg_fps') or 0)
+        low=float(last.get('one_percent_low') or 0)
+        low01=float(last.get('point_one_percent_low') or 0)
+        duration=max(1.0,float(last.get('duration_seconds') or 60))
+        stutters=float(last.get('stutters_33ms') or 0)*60.0/duration
+        r1=(low/avg) if avg else 0
+        r01=(low01/avg) if avg else 0
+        breakdown['Benchmark réel'] += 8 if r1>=0.70 else 6 if r1>=0.55 else 3 if r1>=0.40 else 0
+        breakdown['Benchmark réel'] += 5 if r01>=0.50 else 4 if r01>=0.35 else 2 if r01>=0.20 else 0
+        breakdown['Benchmark réel'] += 7 if stutters<=1 else 5 if stutters<=5 else 2 if stutters<=10 else 0
+        if breakdown['Benchmark réel']<13:
+            rec.append({'level':'important','title':'Stabilité Fortnite à améliorer','detail':'Le dernier benchmark montre des 1% lows/0,1% lows ou des stutters perfectibles.','section':'games'})
+    else:
+        rec.append({'level':'info','title':'Benchmark Fortnite manquant','detail':'20 points gaming restent non validés tant qu’un benchmark en jeu n’a pas été effectué.','section':'games'})
+
+    maxima={'Windows gaming':30,'Profil Fortnite':35,'RAM / BIOS':15,'Benchmark réel':20}
+    for key,maxv in maxima.items():breakdown[key]=max(0,min(maxv,int(breakdown[key])))
+    return sum(breakdown.values()),breakdown,rec
 
 def recommended_options(scan):
     settings=scan.get('settings') or {}
