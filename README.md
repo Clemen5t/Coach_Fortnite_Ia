@@ -1,3 +1,10 @@
+## Acolyte 2.5.1 — correction du redémarrage après mise à jour
+
+- Corrige l’erreur PyInstaller `Security validation failure: invalid originating onefile parent process (PID not found)` après remplacement automatique de `Acolyte.exe`.
+- Le helper de mise à jour supprime désormais les variables privées `_PYI_*` héritées de l’ancien onefile et transmet `PYINSTALLER_RESET_ENVIRONMENT=1` au nouvel Acolyte.
+- Le lancement de transition vers l’EXE utilise la même remise à zéro d’environnement.
+- Build verrouillé sur PyInstaller 6.22.3.x afin d’utiliser les correctifs récents de validation du bootloader.
+
 ## Acolyte 2.5 — mesure, monitoring et restauration intelligente
 
 - **Analyse complète** : matériel, Windows, réseau, stockage, démarrage, jeux, versions installées, températures disponibles et dernier benchmark.
